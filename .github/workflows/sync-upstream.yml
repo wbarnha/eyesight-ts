@@ -1,0 +1,53 @@
+name: Sync upstream eyecite-ts
+
+on:
+  schedule:
+    - cron: '0 9 * * *'
+  workflow_dispatch:
+    inputs:
+      upstream_ref:
+        description: Upstream branch, tag, or commit to sync
+        required: false
+        default: main
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+
+      - name: Sync eyecite-ts subtree
+        run: node ./scripts/sync-upstream.mjs "${{ github.event.inputs.upstream_ref || 'main' }}"
+
+      - name: Run tests
+        run: bun test
+
+      - name: Build package
+        run: bun run build
+
+      - name: Commit synced changes
+        run: |
+          if [ -z "$(git status --porcelain)" ]; then
+            echo "No upstream changes detected"
+            exit 0
+          fi
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          UPSTREAM_SHA=$(node -p "require('./.upstream-sync.json').upstream.sha")
+          git add .
+          git commit -m "chore: sync upstream eyecite-ts (${UPSTREAM_SHA})"
+          git push
