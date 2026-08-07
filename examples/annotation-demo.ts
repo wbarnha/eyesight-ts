@@ -33,8 +33,14 @@ const annotatedScript = annotateCitations(htmlWithScript)
 console.log('Original:', htmlWithScript)
 console.log('Annotated:', annotatedScript)
 // Verify script content is preserved
-const scriptMatch = annotatedScript.match(/<script>(.*?)<\/script>/)
-console.log('Script preserved:', scriptMatch ? scriptMatch[1] : 'Script tag missing!')
+const lowerAnnotatedScript = annotatedScript.toLowerCase()
+const scriptStart = lowerAnnotatedScript.indexOf('<script>')
+const scriptEnd = lowerAnnotatedScript.indexOf('</script>')
+const scriptContent =
+  scriptStart >= 0 && scriptEnd > scriptStart
+    ? annotatedScript.slice(scriptStart + '<script>'.length, scriptEnd)
+    : 'Script tag missing!'
+console.log('Script preserved:', scriptContent)
 console.log()
 
 // Example 5: Custom annotation function
