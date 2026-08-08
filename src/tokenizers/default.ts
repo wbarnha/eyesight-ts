@@ -1,5 +1,5 @@
 import type { TokenExtractor } from './base'
-import { Tokenizer } from './base'
+import { AhocorasickTokenizer } from './ahocorasick'
 import { createSpecialExtractors, createCitationExtractor, createLawCitationExtractor, createJournalCitationExtractor } from './extractors'
 import { REPORTERS, LAWS, JOURNALS } from '../data'
 import { PAGE_NUMBER_REGEX, shortCiteRe } from '../regexes'
@@ -7,7 +7,7 @@ import type { Edition } from '../models'
 import { Reporter } from '../models'
 import { createLawCitationRegex } from '../utils/regex-templates'
 
-export class DefaultTokenizer extends Tokenizer {
+export class DefaultTokenizer extends AhocorasickTokenizer {
   constructor() {
     // Initialize with special extractors
     const extractors = [
@@ -277,133 +277,4 @@ export function createDefaultTokenizer(): DefaultTokenizer {
   return new DefaultTokenizer()
 }
 
-// Performance-optimized tokenizer using string matching
-export class AhocorasickTokenizer extends Tokenizer {
-  private unfilteredExtractors: Set<TokenExtractor>
-  private caseSensitiveStrings: Map<string, TokenExtractor[]>
-  private caseInsensitiveStrings: Map<string, TokenExtractor[]>
-
-  constructor(extractors: TokenExtractor[] = []) {
-    super(extractors)
-    this.rebuildStringMaps()
-  }
-
-  /**
-   * Rebuild the string mapping after extractors have been modified
-   */
-  private rebuildStringMaps(): void {
-    // Build sets for filtering
-    this.unfilteredExtractors = new Set()
-    this.caseSensitiveStrings = new Map()
-    this.caseInsensitiveStrings = new Map()
-
-    for (const extractor of this.extractors) {
-      if (!extractor.strings || extractor.strings.length === 0) {
-        this.unfilteredExtractors.add(extractor)
-      } else {
-        const isCaseInsensitive = !!(extractor.flags && extractor.flags & 2) // re.I = 2
-        const targetMap = isCaseInsensitive
-          ? this.caseInsensitiveStrings
-          : this.caseSensitiveStrings
-
-        for (const str of extractor.strings) {
-          const key = isCaseInsensitive ? str.toLowerCase() : str
-          if (!targetMap.has(key)) {
-            targetMap.set(key, [])
-          }
-          targetMap.get(key)!.push(extractor)
-        }
-      }
-    }
-  }
-
-  /**
-   * Override addExtractor to rebuild string maps
-   */
-  addExtractor(extractor: TokenExtractor): void {
-    super.addExtractor(extractor)
-    this.rebuildStringMaps()
-  }
-
-  /**
-   * Override addExtractors to rebuild string maps
-   */
-  addExtractors(extractors: TokenExtractor[]): void {
-    super.addExtractors(extractors)
-    this.rebuildStringMaps()
-  }
-
-  /**
-   * Override removeExtractor to rebuild string maps
-   */
-  removeExtractor(extractor: TokenExtractor): boolean {
-    const result = super.removeExtractor(extractor)
-    if (result) {
-      this.rebuildStringMaps()
-    }
-    return result
-  }
-
-  /**
-   * Override removeExtractors to rebuild string maps
-   */
-  removeExtractors(predicate: (extractor: TokenExtractor) => boolean): number {
-    const result = super.removeExtractors(predicate)
-    if (result > 0) {
-      this.rebuildStringMaps()
-    }
-    return result
-  }
-
-  /**
-   * Override setExtractors to rebuild string maps
-   */
-  setExtractors(extractors: TokenExtractor[]): void {
-    super.setExtractors(extractors)
-    this.rebuildStringMaps()
-  }
-
-  /**
-   * Override clearExtractors to rebuild string maps
-   */
-  clearExtractors(): void {
-    super.clearExtractors()
-    this.rebuildStringMaps()
-  }
-
-  /**
-   * Override modifyExtractorPatterns to rebuild string maps
-   */
-  modifyExtractorPatterns(
-    modifier: (regex: string, extractor: TokenExtractor) => string,
-    filter?: (extractor: TokenExtractor) => boolean
-  ): void {
-    super.modifyExtractorPatterns(modifier, filter)
-    this.rebuildStringMaps()
-  }
-
-  getExtractors(text: string): TokenExtractor[] {
-    const uniqueExtractors = new Set(this.unfilteredExtractors)
-
-    // Check case-sensitive strings
-    for (const [str, extractors] of this.caseSensitiveStrings) {
-      if (text.includes(str)) {
-        for (const extractor of extractors) {
-          uniqueExtractors.add(extractor)
-        }
-      }
-    }
-
-    // Check case-insensitive strings
-    const lowerText = text.toLowerCase()
-    for (const [str, extractors] of this.caseInsensitiveStrings) {
-      if (lowerText.includes(str)) {
-        for (const extractor of extractors) {
-          uniqueExtractors.add(extractor)
-        }
-      }
-    }
-
-    return Array.from(uniqueExtractors)
-  }
-}
+export { AhocorasickTokenizer } from './ahocorasick'

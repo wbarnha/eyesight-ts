@@ -45,11 +45,22 @@ export function recursiveSubstitute(
 }
 
 /**
- * Get regex variables with law-specific processing
+ * Cached result of {@link getLawRegexVariables}. The variables are derived only
+ * from the static REGEXES dataset, but they are needed once per law pattern
+ * while the tokenizer's extractors are built.
+ */
+let cachedLawRegexVariables: Record<string, string> | null = null
+
+/**
+ * Get regex variables with law-specific processing.
+ *
+ * Returns a fresh object each call; callers add pattern-specific entries (such
+ * as `reporter`) to it.
  */
 export function getLawRegexVariables(): Record<string, string> {
+  if (cachedLawRegexVariables) return { ...cachedLawRegexVariables }
   const variables: Record<string, string> = {}
-  
+
   // Extract base variables from REGEXES
   if (REGEXES.law) {
     // Process law section regex - handle multiple sections with §§
@@ -103,8 +114,9 @@ export function getLawRegexVariables(): Record<string, string> {
     variables.full_cite = REGEXES.full_cite[''] || '$volume $reporter,? $page'
     variables.full_cite_paragraph = REGEXES.full_cite.cch || '(?:$volume_with_digit_suffix )?$reporter $paragraph_marker_optional$page_with_commas'
   }
-  
-  return variables
+
+  cachedLawRegexVariables = variables
+  return { ...variables }
 }
 
 /**
