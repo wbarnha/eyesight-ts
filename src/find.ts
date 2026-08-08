@@ -48,6 +48,24 @@ import {
   type Edition
 } from './models/reporters'
 
+// Law-citation trailer patterns, applied to the source text at an offset.
+// Sticky so they anchor at that offset the way `^` anchored the old substring.
+const LAW_SUBSECTION_RE = /((?:\([a-zA-Z0-9]+\))+)/y
+const LAW_SUBSECTION_AND_RE = /((?:\([a-zA-Z0-9]+\))+)\s+and\s+((?:\([a-zA-Z0-9]+\))+)/y
+const PARENTHETICAL_CONTENT_RE = /\(([^)]+)\)/g
+
+/**
+ * How far past a law citation to look for its trailing year, publisher and
+ * parenthetical.
+ *
+ * This scan previously ran to the end of the document for every law citation,
+ * which is quadratic in document length and let a citation absorb a
+ * parenthetical from arbitrarily far away. The window matches MAX_MATCH_CHARS,
+ * the bound `helpers.addLawMetadata` already applies when it reads the same
+ * trailing metadata off the token stream.
+ */
+const LAW_TRAILER_SEARCH_CHARS = 300
+
 /**
  * Identify emphasis tags in HTML markup
  * @param markupText The HTML markup text
@@ -699,16 +717,21 @@ function extractLawCitation(document: Document, index: number): FullLawCitation 
   
   // Only process what's after the token if there's more text
   if (tokenEnd < sourceText.length) {
-    const afterToken = sourceText.substring(tokenEnd)
-    
+    // The patterns below are matched against `sourceText` at an offset rather
+    // than against a `sourceText.substring(tokenEnd)` copy: a document can hold
+    // many law citations, and copying the remaining text for each one made
+    // extraction quadratic in document length.
+
     // Extract subsections like (a)(2) immediately after the section number
-    const subsectionMatch = afterToken.match(/^((?:\([a-zA-Z0-9]+\))+)/)
+    LAW_SUBSECTION_RE.lastIndex = tokenEnd
+    const subsectionMatch = LAW_SUBSECTION_RE.exec(sourceText)
     if (subsectionMatch) {
       citation.metadata.pinCite = subsectionMatch[1]
     }
     
     // Handle "and" connections like "(a)(2) and (d)"
-    const andMatch = afterToken.match(/^((?:\([a-zA-Z0-9]+\))+)\s+and\s+((?:\([a-zA-Z0-9]+\))+)/)
+    LAW_SUBSECTION_AND_RE.lastIndex = tokenEnd
+    const andMatch = LAW_SUBSECTION_AND_RE.exec(sourceText)
     if (andMatch) {
       citation.metadata.pinCite = `${andMatch[1]} and ${andMatch[2]}`
     }
@@ -722,16 +745,16 @@ function extractLawCitation(document: Document, index: number): FullLawCitation 
       searchStart = pinCiteLength
     }
     
-    const searchText = afterToken.substring(searchStart)
-    const parenPattern = /\(([^)]+)\)/g
-    let match
-    const parentheticals = []
-    while ((match = parenPattern.exec(searchText)) !== null) {
-      parentheticals.push(match[1])
-    }
-    
-    // Process parentheticals
-    for (const paren of parentheticals) {
+    const searchEnd = Math.min(
+      sourceText.length,
+      tokenEnd + searchStart + LAW_TRAILER_SEARCH_CHARS,
+    )
+    PARENTHETICAL_CONTENT_RE.lastIndex = tokenEnd + searchStart
+    let match: RegExpExecArray | null
+    while ((match = PARENTHETICAL_CONTENT_RE.exec(sourceText)) !== null) {
+      if (match.index >= searchEnd) break
+      const paren = match[1]
+
       // Check if it's a year (with optional year range)
       const yearMatch = paren.match(/^(\d{4})(?:-(\d{2,4}))?$/)
       if (yearMatch && !citation.year) {
@@ -754,6 +777,12 @@ function extractLawCitation(document: Document, index: number): FullLawCitation 
       // Otherwise it's a parenthetical (like "repealed")
       if (!citation.metadata.parenthetical && !yearMatch && !pubYearMatch) {
         citation.metadata.parenthetical = paren
+      }
+
+      // Every field this loop can fill is filled, so no later parenthetical
+      // can change the result.
+      if (citation.year && citation.metadata.publisher && citation.metadata.parenthetical) {
+        break
       }
     }
   }

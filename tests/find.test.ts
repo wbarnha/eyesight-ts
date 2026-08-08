@@ -3916,4 +3916,48 @@ describe('Find Citations', () => {
     })
 
   })
+
+  describe('Law Citation Trailing Metadata Scope', () => {
+    test('does not absorb a parenthetical from a distant unrelated citation', () => {
+      const filler = 'The quick brown fox jumps over the lazy dog. '.repeat(10)
+      const text =
+        `Claims arise under 42 U.S.C. § 1983. ${filler}` +
+        'United States v. Nixon, 418 U.S. 683 (1974) (D.C. Cir.).'
+
+      const law = getCitations(text).find(
+        (c) => c.constructor.name === 'FullLawCitation',
+      ) as any
+      expect(law).toBeDefined()
+      expect(law.metadata.parenthetical).toBeUndefined()
+      expect(law.metadata.publisher).toBeUndefined()
+    })
+
+    test('still reads a year and parenthetical that directly follow the citation', () => {
+      const law = getCitations('Claims arise under 42 U.S.C. § 1983 (2018) (repealed).').find(
+        (c) => c.constructor.name === 'FullLawCitation',
+      ) as any
+      expect(law).toBeDefined()
+      expect(law.year).toBe(2018)
+      expect(law.metadata.parenthetical).toBe('repealed')
+    })
+
+    test('scales linearly with document length', () => {
+      const unit = 'Claims arise under 42 U.S.C. § 1983 (2018). '
+      const measure = (reps: number) => {
+        const doc = unit.repeat(reps)
+        getCitations(doc)
+        const start = performance.now()
+        getCitations(doc)
+        return performance.now() - start
+      }
+
+      measure(50) // warm up
+      const small = measure(200)
+      const large = measure(800)
+
+      // Quadratic behaviour would be ~16x for a 4x longer document; allow
+      // generous headroom for a noisy CI machine while still catching it.
+      expect(large).toBeLessThan(small * 8)
+    })
+  })
 })
