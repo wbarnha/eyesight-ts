@@ -66,6 +66,22 @@ const PARENTHETICAL_CONTENT_RE = /\(([^)]+)\)/g
  */
 const LAW_TRAILER_SEARCH_CHARS = 300
 
+interface CandidatePositions {
+  /** Ascending positions in plainText that pass every position-only check. */
+  positions: number[]
+  /** Union-find style pointers to the next position not yet consumed. */
+  nextFree: Int32Array
+}
+
+// Emphasis-tag filters and look-ahead patterns for the markup reference pass.
+// The look-ahead patterns are sticky rather than `^`-anchored so they can be
+// applied at an offset in plainText instead of against a fresh tail copy.
+const EMPHASIS_REPORTER_RE = /^(F|L\.Ed|S\.Ct|U\.S|N\.E|N\.W|S\.E|S\.W|P|A|Cal|N\.Y|Ill|Tex|Ohio)\.$/
+const FOLLOWED_BY_VS_OR_SUPRA_RE = /\s*,?\s*(v[.s]|supra)/y
+const FOLLOWED_BY_REPORTER_RE = /,?\s*\d+\s+[A-Z]/y
+const FOLLOWED_BY_AT_PARALLEL_RE = /\s+at\s+\d+(?:-\d+)?,\s*\d+\s+[A-Z]/y
+const REFERENCE_PIN_CITE_RE = /\s*(?:,\s*)?(at\s+\d+(?:-\d+)?)/iy
+
 /**
  * Identify emphasis tags in HTML markup
  * @param markupText The HTML markup text
@@ -1054,7 +1070,98 @@ export function findReferenceCitationsFromMarkup(
   
   // Keep track of which positions we've already used to avoid duplicates
   const usedPositions = new Set<number>()
-  
+
+  // Index the citations by case name once, instead of rescanning every citation
+  // and name field for every emphasis tag. Entries are inserted in citation
+  // order and, within a citation, in name-field order, so consumers see exactly
+  // the sequence the nested loops used to produce.
+  const citationsByName = new Map<string, Array<{ citation: FullCaseCitation; nameField: string; value: string }>>()
+  for (const citation of citations) {
+    for (const nameField of ReferenceCitation.nameFields) {
+      const value = (citation.metadata as any)[nameField]
+      if (!value) continue
+      const key = value.trim()
+      let entries = citationsByName.get(key)
+      if (!entries) {
+        entries = []
+        citationsByName.set(key, entries)
+      }
+      entries.push({ citation, nameField, value })
+    }
+  }
+
+  /**
+   * Positions where a given emphasis text could become a reference, with the
+   * position-only rejections already applied.
+   *
+   * Whether a position is acceptable depends only on the text around it, so it
+   * is computed once per distinct emphasis text instead of re-testing the same
+   * positions for every citation that shares the case name. The only remaining
+   * per-citation condition is `usedPositions`, which just consumes candidates.
+   */
+  const candidateCache = new Map<string, CandidatePositions>()
+
+  const candidatesFor = (tagText: string, cleanTagText: string): CandidatePositions => {
+    let candidates = candidateCache.get(tagText)
+    if (candidates) return candidates
+
+    const positions: number[] = []
+    const plainText = document.plainText
+    for (
+      let index = plainText.indexOf(tagText);
+      index !== -1;
+      index = plainText.indexOf(tagText, index + 1)
+    ) {
+      const afterTagIndex = index + tagText.length
+
+      // Skip if followed by supra or v.
+      FOLLOWED_BY_VS_OR_SUPRA_RE.lastIndex = afterTagIndex
+      if (FOLLOWED_BY_VS_OR_SUPRA_RE.test(plainText)) continue
+      // Skip if followed by a reporter pattern (e.g., "Twombly, 550 U.S. 544")
+      FOLLOWED_BY_REPORTER_RE.lastIndex = afterTagIndex
+      if (FOLLOWED_BY_REPORTER_RE.test(plainText)) continue
+      // Skip if followed by "at" and a number with a parallel citation
+      // (e.g., "Nobelman at 332, 113 S.Ct.")
+      FOLLOWED_BY_AT_PARALLEL_RE.lastIndex = afterTagIndex
+      if (FOLLOWED_BY_AT_PARALLEL_RE.test(plainText)) continue
+
+      // Check what comes before - skip if it's part of "Bae's"
+      if (index > 0) {
+        const beforeChar = plainText[index - 1]
+        const afterChar = plainText[index + cleanTagText.length]
+        if (beforeChar && /\w/.test(beforeChar)) continue
+        if (afterChar === "'" || (afterChar && /\w/.test(afterChar))) continue
+      }
+
+      positions.push(index)
+    }
+
+    candidates = { positions, nextFree: new Int32Array(positions.length + 1).map((_, i) => i) }
+    candidateCache.set(tagText, candidates)
+    return candidates
+  }
+
+  /**
+   * First candidate at or after `from` that is still unused, with path
+   * compression so repeated scans over consumed positions stay near-constant.
+   */
+  const firstUnused = (candidates: CandidatePositions, from: number): number => {
+    const { positions, nextFree } = candidates
+    let index = from
+    while (index < positions.length && usedPositions.has(positions[index])) {
+      index = nextFree[index] > index ? nextFree[index] : index + 1
+    }
+    // Compress the path we just walked. The next step has to be read before the
+    // pointer is overwritten, or the walk stops after the first entry.
+    let step = from
+    while (step < index) {
+      const next = nextFree[step] > step ? nextFree[step] : step + 1
+      nextFree[step] = index
+      step = next
+    }
+    return index
+  }
+
   // Process each emphasis tag
   for (const [tagText, tagStart, tagEnd] of document.emphasisTags) {
     // Skip tags that contain full case names (with v. or v)
@@ -1063,92 +1170,56 @@ export function findReferenceCitationsFromMarkup(
     // Skip reporter abbreviations like "F.", "L.Ed.", "S.Ct." etc
     // But don't skip case names like "Halper." or "U.S." when it's a party name
     // Only skip common reporter abbreviations
-    const reporterPattern = /^(F|L\.Ed|S\.Ct|U\.S|N\.E|N\.W|S\.E|S\.W|P|A|Cal|N\.Y|Ill|Tex|Ohio)\.$/ 
-    if (tagText.match(reporterPattern)) continue
+    if (EMPHASIS_REPORTER_RE.test(tagText)) continue
     
     // Skip "citing," and "and"
     if (tagText === 'citing,' || tagText === 'and') continue
     
-    // Skip multi-word phrases that aren't case names
-    if (tagText.includes(' ') && tagText !== 'ex post facto') {
-      // Check if this matches any case name exactly
-      const matchesCaseName = citations.some(c => {
-        return ReferenceCitation.nameFields.some(field => {
-          const value = (c.metadata as any)[field]
-          return value && tagText.trim().replace(/[,.:;]+$/, '') === value.trim()
-        })
-      })
-      if (!matchesCaseName) continue
-    }
-    
     // Clean the tag text for comparison
     const cleanTagText = tagText.trim().replace(/[,.:;]+$/, '')
-    
-    // For each citation, check if this tag matches any of its case names
-    for (const citation of citations) {
-      for (const nameField of ReferenceCitation.nameFields) {
-        const value = (citation.metadata as any)[nameField]
-        if (!value || !isValidName(value)) continue
-        
-        // Check if the tag matches this case name
-        if (cleanTagText === value.trim()) {
-          // Find all occurrences of this text in the plain text
-          let searchStart = 0
-          while (searchStart < document.plainText.length) {
-            const plainTextIndex = document.plainText.indexOf(tagText, searchStart)
-            if (plainTextIndex === -1) break
-            
-            // Must appear after the citation
-            if (plainTextIndex <= citation.span().start) {
-              searchStart = plainTextIndex + 1
-              continue
-            }
-            
-            // Skip if we've already used this position
-            if (usedPositions.has(plainTextIndex)) {
-              searchStart = plainTextIndex + 1
-              continue
-            }
-            
-            // Check what comes after - skip if it's followed by "v.", "supra", or a citation pattern
-            const afterText = document.plainText.slice(plainTextIndex + tagText.length)
-            // Skip if followed by supra or v.
-            if (/^\s*,?\s*(v[.s]|supra)/.test(afterText)) {
-              searchStart = plainTextIndex + 1
-              continue
-            }
-            // Skip if followed by a reporter pattern (e.g., "Twombly, 550 U.S. 544")
-            if (/^,?\s*\d+\s+[A-Z]/.test(afterText)) {
-              searchStart = plainTextIndex + 1
-              continue
-            }
-            // Skip if followed by "at" and a number with a parallel citation (e.g., "Nobelman at 332, 113 S.Ct.")
-            if (/^\s+at\s+\d+(?:-\d+)?,\s*\d+\s+[A-Z]/.test(afterText)) {
-              searchStart = plainTextIndex + 1
-              continue
-            }
-            
-            // Check what comes before - skip if it's part of "Bae's"
-            if (plainTextIndex > 0) {
-              const beforeChar = document.plainText[plainTextIndex - 1]
-              const afterChar = document.plainText[plainTextIndex + cleanTagText.length]
-              if (beforeChar && /\w/.test(beforeChar)) {
-                searchStart = plainTextIndex + 1
-                continue
-              }
-              if (afterChar === "'" || (afterChar && /\w/.test(afterChar))) {
-                searchStart = plainTextIndex + 1
-                continue
-              }
-            }
-            
+
+    // Skip multi-word phrases that aren't case names
+    if (tagText.includes(' ') && tagText !== 'ex post facto') {
+      if (!citationsByName.has(cleanTagText)) continue
+    }
+
+    // Citations whose case name is exactly this tag, in the order the nested
+    // citation/name-field loops would have reached them.
+    const nameMatches = citationsByName.get(cleanTagText)
+    if (!nameMatches) continue
+
+    // At most one reference per tag/citation pair, from the first usable field.
+    const matchedCitations = new Set<FullCaseCitation>()
+    for (const { citation, nameField, value } of nameMatches) {
+      if (!isValidName(value)) continue
+      if (matchedCitations.has(citation)) continue
+      {
+        {
+          // Only positions after the citation qualify. Candidates are already
+          // filtered and shared across citations, so this is a binary search
+          // plus a walk over consumed positions rather than a fresh scan of the
+          // document for every tag/citation pair.
+          const citationStart = citation.span().start
+          const candidates = candidatesFor(tagText, cleanTagText)
+          let low = 0
+          let high = candidates.positions.length
+          while (low < high) {
+            const mid = (low + high) >>> 1
+            if (candidates.positions[mid] <= citationStart) low = mid + 1
+            else high = mid
+          }
+
+          const candidateIndex = firstUnused(candidates, low)
+          if (candidateIndex < candidates.positions.length) {
+            const plainTextIndex = candidates.positions[candidateIndex]
+
             // Check for pin cite after the emphasis tag
             let pinCite: string | undefined
             let fullSpanEnd = plainTextIndex + cleanTagText.length
             
             // Look for pin cite pattern after the tag
-            const afterTagText = document.plainText.slice(plainTextIndex + cleanTagText.length)
-            const pinCiteMatch = afterTagText.match(/^\s*(?:,\s*)?(at\s+\d+(?:-\d+)?)/i)
+            REFERENCE_PIN_CITE_RE.lastIndex = plainTextIndex + cleanTagText.length
+            const pinCiteMatch = REFERENCE_PIN_CITE_RE.exec(document.plainText)
             
             if (pinCiteMatch) {
               pinCite = pinCiteMatch[1] // Capture "at 332" not just "332"
@@ -1177,13 +1248,10 @@ export function findReferenceCitationsFromMarkup(
             
             references.push(reference)
             usedPositions.add(plainTextIndex)
-            
-            // Only create one reference per tag/citation pair at this position
-            break
           }
           
           // Only match with the first matching field
-          break
+          matchedCitations.add(citation)
         }
       }
     }

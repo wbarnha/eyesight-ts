@@ -243,6 +243,30 @@ describe('pathological inputs', () => {
     expect(large).toBeLessThan(small * 16)
   })
 
+  test('repeated emphasised case names in HTML scale sub-quadratically', () => {
+    const makeHtml = (paragraphs: number) =>
+      `<html><body>${Array.from(
+        { length: paragraphs },
+        (_, i) =>
+          `<p>In <em>Twombly v. Bell</em>, 550 U.S. 544, 555 (2007), the Court held otherwise. ` +
+          `<em>Twombly</em> at ${560 + i} controls here. See also <em>Iqbal</em> and <i>Nobelman</i> at 332. ` +
+          `The parties dispute whether the doctrine applies in paragraph ${i}.</p>`,
+      ).join('\n')}</body></html>`
+
+    const measure = (paragraphs: number) => {
+      const html = makeHtml(paragraphs)
+      return fastestRun(() => getCitations('', false, undefined, html, ['html', 'all_whitespace']), 3)
+    }
+
+    const small = measure(40)
+    const large = measure(160)
+
+    // The reference pass used to re-test every candidate position for every
+    // (emphasis tag, citation) pair, which is cubic in paragraph count: a 4x
+    // longer document took ~50x as long.
+    expect(large).toBeLessThan(small * 12)
+  })
+
   test('still tokenizes placeholder citations', () => {
     const [, tokens] = defaultTokenizer.tokenize('See ___ U.S. ___ (1982).')
     const placeholders = tokens.filter(
