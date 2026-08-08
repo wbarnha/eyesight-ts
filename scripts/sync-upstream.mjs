@@ -148,8 +148,8 @@ This package is published to npm as \`${LOCAL_PACKAGE_NAME}\`.
 
 ## Normal workflow
 
-1. Let the scheduled \`sync-upstream\` GitHub Actions workflow pull changes from \`freelawproject/eyecite\` automatically.
-2. Review the synced commit(s) in this repository.
+1. Let the scheduled \`sync-upstream\` GitHub Actions workflow pull changes from \`freelawproject/eyecite\` onto the \`upstream\` vendor branch automatically.
+2. Review the \`upstream\` -> default branch pull request it opens and merge it **with a merge commit**. See \`docs/UPSTREAM_SYNC.md\`.
 3. Create a GitHub Release with the version tag you want to publish, for example \`v2.7.6\`.
 4. The release workflow will run tests, build the package, set \`package.json\` to the release tag version, and publish to npm.
 
@@ -159,10 +159,15 @@ Add an \`NPM_TOKEN\` repository secret with permission to publish the \`${LOCAL_
 
 ## Manual sync
 
-You can trigger a sync locally or in GitHub Actions:
+Run the sync on the \`upstream\` vendor branch, then merge that branch — the
+script overwrites files rather than merging them, so running it on a branch that
+carries local changes discards them:
 
 \`\`\`bash
+git checkout upstream
 npm run sync:upstream
+git commit -am "chore: sync upstream eyecite-ts"
+git checkout main && git merge upstream
 \`\`\`
 
 Pass a specific upstream ref if needed:
@@ -176,6 +181,8 @@ node ./scripts/sync-upstream.mjs bb8d1e5b2edc0edd4aa1982b5901933feabe29aa
 - Upstream source: \`${LOCAL_REPOSITORY_URL}\` mirrors \`${UPSTREAM_OWNER}/${UPSTREAM_REPO}\`'s \`${UPSTREAM_SUBDIR}/\` directory.
 - Releases are manual by design.
 - The release tag should start with \`v\`, such as \`v2.7.6\`.
+- How upstream changes reach the default branch without overwriting local work
+  is documented in \`docs/UPSTREAM_SYNC.md\`.
 `
 }
 

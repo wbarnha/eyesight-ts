@@ -1,5 +1,13 @@
 name: Sync upstream eyecite-ts
 
+# Upstream changes land on a dedicated vendor branch that holds nothing but the
+# synced subtree, and reach the default branch through a merge. Git's three-way
+# merge keeps local changes where upstream did not touch the same lines, and
+# raises a conflict where it did — instead of the sync script's file copy
+# silently overwriting local work.
+#
+# See docs/UPSTREAM_SYNC.md.
+
 on:
   schedule:
     - cron: '0 9 * * *'
@@ -10,13 +18,26 @@ on:
         required: false
         default: main
 
+# Two syncs must never race on the vendor branch.
+concurrency:
+  group: sync-upstream
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+  pull-requests: write
+
+env:
+  VENDOR_BRANCH: upstream
+  DEFAULT_BRANCH: ${{ github.event.repository.default_branch || 'main' }}
+
 jobs:
   sync:
     runs-on: ubuntu-latest
-    permissions:
-      contents: write
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - uses: actions/setup-node@v4
         with:
@@ -26,28 +47,117 @@ jobs:
         with:
           bun-version: latest
 
-      - name: Install dependencies
-        run: bun install --frozen-lockfile
+      - name: Check out the vendor branch
+        run: |
+          if ! git ls-remote --exit-code --heads origin "$VENDOR_BRANCH" >/dev/null; then
+            echo "::error::Vendor branch '$VENDOR_BRANCH' does not exist. See docs/UPSTREAM_SYNC.md for how to create it."
+            exit 1
+          fi
+          git checkout -B "$VENDOR_BRANCH" "origin/$VENDOR_BRANCH"
+
+      # The sync script and the workflows are local-only: the sync never
+      # overwrites them, so the copies on the vendor branch would drift from the
+      # default branch and the sync would keep running stale tooling. Take them
+      # from the default branch on every run. Because the vendor branch's copies
+      # are always a copy of a default-branch commit, this never conflicts at
+      # merge time.
+      - name: Take local-only tooling from ${{ github.event.repository.default_branch || 'main' }}
+        run: git checkout "origin/${DEFAULT_BRANCH}" -- scripts/sync-upstream.mjs .github
 
       - name: Sync eyecite-ts subtree
-        run: node ./scripts/sync-upstream.mjs "${{ github.event.inputs.upstream_ref || 'main' }}"
+        run: node ./scripts/sync-upstream.mjs "${{ inputs.upstream_ref || 'main' }}"
 
-      - name: Run tests
-        run: bun test
-
-      - name: Build package
-        run: bun run build
-
-      - name: Commit synced changes
+      - name: Commit to the vendor branch
+        id: vendor
         run: |
           if [ -z "$(git status --porcelain)" ]; then
-            echo "No upstream changes detected"
+            echo "No upstream changes detected."
+            echo "changed=false" >> "$GITHUB_OUTPUT"
             exit 0
           fi
 
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          UPSTREAM_SHA=$(node -p "require('./.upstream-sync.json').upstream.sha")
-          git add .
-          git commit -m "chore: sync upstream eyecite-ts (${UPSTREAM_SHA})"
-          git push
+
+          upstream_sha="$(node -p "require('./.upstream-sync.json').upstream.sha")"
+          git add -A
+          git commit -m "chore: sync upstream eyecite-ts (${upstream_sha})"
+          git push origin "$VENDOR_BRANCH"
+
+          echo "changed=true" >> "$GITHUB_OUTPUT"
+          echo "sha=${upstream_sha}" >> "$GITHUB_OUTPUT"
+
+      # A pull request opened with GITHUB_TOKEN does not trigger workflow runs,
+      # so ci.yml may not run on the merge PR. Verify the merged tree here so the
+      # PR always carries a real signal. Setting a SYNC_PAT secret restores
+      # native CI on the PR and makes this a redundant second check.
+      - name: Verify the merged result
+        id: verify
+        if: steps.vendor.outputs.changed == 'true'
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git checkout -B sync-verify "origin/${DEFAULT_BRANCH}"
+
+          if ! git merge --no-edit "$VENDOR_BRANCH"; then
+            git diff --name-only --diff-filter=U > /tmp/sync-conflicts.txt || true
+            git merge --abort || true
+            {
+              echo "status=conflict"
+              echo "conflicts<<SYNC_EOF"
+              cat /tmp/sync-conflicts.txt
+              echo "SYNC_EOF"
+            } >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          status=pass
+          if ! bun install --frozen-lockfile; then
+            status=fail
+          fi
+          if [ "$status" = pass ]; then
+            if ! bun test; then status=fail; fi
+          fi
+          if [ "$status" = pass ]; then
+            if ! bun run build; then status=fail; fi
+          fi
+          echo "status=${status}" >> "$GITHUB_OUTPUT"
+
+      - name: Open or update the merge pull request
+        if: steps.vendor.outputs.changed == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.SYNC_PAT || secrets.GITHUB_TOKEN }}
+          VERIFY_STATUS: ${{ steps.verify.outputs.status }}
+          CONFLICTS: ${{ steps.verify.outputs.conflicts }}
+          UPSTREAM_SHA: ${{ steps.vendor.outputs.sha }}
+          UPSTREAM_REF: ${{ inputs.upstream_ref || 'main' }}
+        run: |
+          case "$VERIFY_STATUS" in
+            pass)
+              summary="Merging into \`${DEFAULT_BRANCH}\` is clean, and \`bun test\` plus \`bun run build\` pass on the merged tree."
+              ;;
+            fail)
+              summary="Merging into \`${DEFAULT_BRANCH}\` is clean, but **\`bun test\` or \`bun run build\` fails on the merged tree**. Upstream changed behaviour this repository's local work depends on — reconcile before merging."
+              ;;
+            conflict)
+              summary=$(printf 'This branch **conflicts** with `%s`. Upstream edited lines that are also modified locally, so the merge needs a human decision.\n\nConflicting files:\n\n```\n%s\n```' "$DEFAULT_BRANCH" "$CONFLICTS")
+              ;;
+            *)
+              summary="Verification did not run."
+              ;;
+          esac
+
+          body=$(printf 'Synced `freelawproject/eyecite@%s` (ref `%s`) into the `%s` vendor branch.\n\n%s\n\n---\n\nThe vendor branch holds only upstream content. Merging it — rather than letting the sync script copy files over the default branch — is what keeps local changes from being silently overwritten; see `docs/UPSTREAM_SYNC.md`.\n\nMerge this with a **merge commit**, not squash or rebase: squashing breaks the ancestry that makes the next sync a clean three-way merge.\n\n---\n_Generated by [Claude Code](https://claude.ai/code)_\n' "$UPSTREAM_SHA" "$UPSTREAM_REF" "$VENDOR_BRANCH" "$summary")
+
+          existing=$(gh pr list --head "$VENDOR_BRANCH" --base "$DEFAULT_BRANCH" --state open --json number --jq '.[0].number // empty')
+
+          if [ -n "$existing" ]; then
+            gh pr edit "$existing" --body "$body"
+            echo "Updated pull request #${existing}."
+          else
+            gh pr create \
+              --base "$DEFAULT_BRANCH" \
+              --head "$VENDOR_BRANCH" \
+              --title "chore: sync upstream eyecite-ts (${UPSTREAM_SHA})" \
+              --body "$body"
+          fi
