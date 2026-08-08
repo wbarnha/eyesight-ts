@@ -15,9 +15,9 @@ A TypeScript library for extracting legal citations from text strings. This is a
 - **Law citations**: Full support for statutory citations (U.S.C., state codes, etc.)
 - **Journal citations**: Recognizes law review and journal citations
 - **HTML annotation**: Built-in system for marking up citations in HTML documents
-- **High performance**: Built with modern TypeScript and optimized for speed
+- **High performance**: Literal pre-filtering means only the handful of relevant reporter patterns run against a document
 - **TypeScript-first**: Full type definitions and excellent IDE support
-- **Well-tested**: Comprehensive test suite with 151 passing tests
+- **Well-tested**: Comprehensive test suite with 302 passing tests
 
 ## Installation
 
@@ -119,9 +119,11 @@ const citations = getCitations(cleanedText)
 Use custom tokenizers for specialized needs:
 
 ```typescript
-import { getCitations, DefaultTokenizer, REPORTERS } from 'eyesight-ts'
+import { getCitations, DefaultTokenizer } from 'eyesight-ts'
 
-const customTokenizer = new DefaultTokenizer(REPORTERS)
+// DefaultTokenizer builds its extractors from the bundled reporter,
+// law and journal datasets.
+const customTokenizer = new DefaultTokenizer()
 const citations = getCitations(text, false, customTokenizer)
 ```
 
@@ -200,16 +202,42 @@ eyecite-ts provides comprehensive support for case citations with the following 
 
 ## Performance
 
-eyecite-ts is optimized for performance:
+The library registers roughly 8,500 citation patterns. Rather than running them
+all, it loads the literal abbreviation each pattern requires (`U.S.`, `F.3d`,
+`Harv. L. Rev.`, ...) into an Aho-Corasick automaton and makes a single pass
+over the text to decide which patterns are worth running — typically a few dozen
+out of 8,500. Extraction after that is linear in document length.
 
-- **Fast tokenization**: Efficient regex-based tokenization
-- **Minimal allocations**: Optimized for low memory usage
-- **Batch processing**: Handles large documents efficiently
-- **TypeScript optimizations**: Built with modern TypeScript features
+Measured with `bun run bench` (bun 1.3, Linux x64):
+
+| Workload | Time |
+| --- | --- |
+| One-line citation | ~0.06–0.11 ms |
+| Mixed paragraph (case, law, journal, id, supra) | ~0.33 ms |
+| 42 KB document, 880 citations | ~25 ms (1.7 MB/s) |
+| 21 KB of prose with no citations | ~2.3 ms |
+| HTML with markup annotation | ~0.24 ms |
+| Module import | ~130 ms |
+| First `getCitations()` (builds the automaton) | ~53 ms |
+
+The automaton is built lazily on first use, so importing the library without
+extracting anything does not pay for it.
+
+### Benchmarking
+
+```bash
+# Timing across snippets, documents and the markup path
+bun run bench
+
+# Record a golden snapshot of every extracted citation, then verify
+# a change did not alter any output
+bun run bench:golden write /tmp/golden.json
+bun run bench:golden check /tmp/golden.json
+```
 
 ## Testing
 
-The library includes a comprehensive test suite with 151 tests covering all citation types and edge cases:
+The library includes a comprehensive test suite with 302 tests covering all citation types and edge cases:
 
 ```bash
 # Using Bun (recommended)
@@ -261,6 +289,7 @@ eyecite-ts/
 │   ├── helpers.ts     # Helper functions
 │   └── data/          # Reporter and court databases
 ├── tests/             # Comprehensive test suite
+├── bench/             # Benchmark and golden-output harnesses
 └── dist/              # Built output (ESM + CJS)
 ```
 
