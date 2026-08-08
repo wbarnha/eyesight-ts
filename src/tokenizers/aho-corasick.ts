@@ -45,6 +45,12 @@ export class AhoCorasick {
    */
   private visitStamp = new Int32Array(0)
   private generation = 0
+  /**
+   * Marks the code units that begin some pattern. Most characters of ordinary
+   * prose start no reporter abbreviation, so testing this byte first skips the
+   * majority of the map lookups the scan would otherwise perform at the root.
+   */
+  private rootTransitions = new Uint8Array(0)
 
   /**
    * Register a pattern. Patterns must be added before the first search; adding
@@ -124,6 +130,14 @@ export class AhoCorasick {
     this.dictionaryLink = dictionaryLink
     this.visitStamp = new Int32Array(this.nodeCount)
     this.generation = 0
+
+    // Root transitions are keyed by the bare code unit (node 0).
+    const rootTransitions = new Uint8Array(0x10000)
+    for (const key of this.transitions.keys()) {
+      if (key < 0x10000) rootTransitions[key] = 1
+    }
+    this.rootTransitions = rootTransitions
+
     // Child links are only needed for the BFS above.
     this.firstChild = []
     this.nextSibling = []
@@ -139,12 +153,16 @@ export class AhoCorasick {
     if (!this.built) this.build()
     if (this.nodeCount === 1) return
 
-    const { transitions, failure, dictionaryLink, terminals, visitStamp } = this
+    const { transitions, failure, dictionaryLink, terminals, visitStamp, rootTransitions } = this
     const stamp = ++this.generation
     let node = 0
 
     for (let i = 0; i < text.length; i++) {
       const code = text.charCodeAt(i)
+
+      // Fast path: at the root, a character that starts no pattern cannot begin
+      // a match, and code units past the BMP never appear in the patterns.
+      if (node === 0 && (code >= 0x10000 || rootTransitions[code] === 0)) continue
 
       let next = transitions.get(node * ALPHABET_STRIDE + code)
       while (next === undefined && node !== 0) {
