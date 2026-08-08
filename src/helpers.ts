@@ -33,6 +33,16 @@ import {
 } from './regexes'
 
 const BACKWARD_SEEK = 28 // Median case name length in the CL db is 28 (2016-02-26)
+
+// Compiled once from module-level patterns; rebuilding these per call showed up
+// as a measurable share of extraction time. `String.replace` resets `lastIndex`
+// on a global regex, so sharing these instances is safe.
+const STOP_WORD_RE_GLOBAL = new RegExp(STOP_WORD_REGEX, 'g')
+const STOP_WORD_RE_GLOBAL_INSENSITIVE = new RegExp(STOP_WORD_REGEX, 'gi')
+const YEAR_ONLY_RE = new RegExp(YEAR_REGEX)
+const COURT_DATE_RE = new RegExp(
+  `^(.+?)\\s+(${MONTH_REGEX_INNER.trim()})\\s+(\\d{1,2}),?\\s+(\\d{4})$`,
+)
 const MAX_MATCH_CHARS = 300
 
 // Highest valid year is this year + 1 because courts in December sometimes
@@ -1392,7 +1402,7 @@ function extractDefendantAfterStopword(
  * Strip stop words from text
  */
 export function stripStopWords(text: string): string {
-  let cleaned = text.replace(new RegExp(STOP_WORD_REGEX, 'g'), ' ')
+  let cleaned = text.replace(STOP_WORD_RE_GLOBAL, ' ')
   cleaned = cleaned.replace(/^In\s+/i, '').trim()
   cleaned = cleaned.replace(/^\(/, '').replace(/\)$/, '')
   
@@ -1401,7 +1411,7 @@ export function stripStopWords(text: string): string {
   }
   
   cleaned = cleaned
-    .replace(new RegExp(STOP_WORD_REGEX, 'gi'), '')
+    .replace(STOP_WORD_RE_GLOBAL_INSENSITIVE, '')
     .trim()
   
   // Replace multiple commas/spaces with single space, but preserve comma before Inc., Corp., etc.
@@ -1453,7 +1463,7 @@ function processParenthetical(matchedParenthetical: string | null): string | nul
   }
   
   // Check if it's just a year
-  if (new RegExp(YEAR_REGEX).test(matchedParenthetical)) {
+  if (YEAR_ONLY_RE.test(matchedParenthetical)) {
     return null
   }
   
@@ -1524,8 +1534,7 @@ export function addPostCitation(citation: CaseCitation, words: Tokens): void {
         let hasYearOrCourt = false
         
         // Try to extract date pattern first (month day, year)
-        const dateRegex = new RegExp(`^(.+?)\\s+(${MONTH_REGEX_INNER.trim()})\\s+(\\d{1,2}),?\\s+(\\d{4})$`)
-        const dateMatch = parenContent.match(dateRegex)
+        const dateMatch = parenContent.match(COURT_DATE_RE)
         if (dateMatch) {
           hasYearOrCourt = true
           // Extract court (before month)
