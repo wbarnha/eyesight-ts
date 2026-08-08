@@ -1,5 +1,6 @@
 import { describe, expect, test } from 'bun:test'
 import { LARGE_DOCUMENT, MARKUP_DOCUMENT, PROSE_DOCUMENT, SNIPPETS } from '../bench/corpus'
+import { getCitations } from '../src/index'
 import { SpanUpdater } from '../src/span-updater'
 import { AhoCorasick } from '../src/tokenizers/aho-corasick'
 import { AhocorasickTokenizer } from '../src/tokenizers/ahocorasick'
@@ -129,6 +130,29 @@ describe('extractor pre-filtering', () => {
     },
   )
 
+  test('only skips an extractor when its regex cannot match without its strings', () => {
+    // The pre-filter is sound only for extractors whose declared strings appear
+    // in the pattern as escaped literals. Anything else must always run.
+    const escapeRegex = (value: string) => value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+    const alwaysRun = new Set(defaultTokenizer.getExtractors(''))
+
+    for (const extractor of defaultTokenizer.extractors) {
+      if (!extractor.strings || extractor.strings.length === 0) continue
+      const caseInsensitive = !!(extractor.flags && extractor.flags & 2)
+      const pattern = caseInsensitive ? extractor.regex.toLowerCase() : extractor.regex
+
+      const allRequired = extractor.strings.every((str) => {
+        if (!str) return true
+        const source = caseInsensitive ? str.toLowerCase() : str
+        return pattern.includes(escapeRegex(source))
+      })
+
+      if (!allRequired) {
+        expect(alwaysRun.has(extractor)).toBe(true)
+      }
+    }
+  })
+
   test('narrows thousands of extractors down to a handful', () => {
     expect(defaultTokenizer.extractors.length).toBeGreaterThan(1000)
     expect(
@@ -184,5 +208,47 @@ describe('SpanUpdater', () => {
     expect(updater.update(0)).toBe(0)
     expect(updater.update(3)).toBe(2) // after the 1-char deletion
     expect(updater.update(7)).toBe(4) // after the 2-char deletion as well
+  })
+})
+
+/**
+ * Best-of-N timing. A single wall-clock sample is far too noisy to assert on;
+ * the minimum across several runs is dominated by the work itself rather than
+ * by scheduling.
+ */
+function fastestRun(work: () => void, runs = 5): number {
+  work() // warm up
+  let best = Number.POSITIVE_INFINITY
+  for (let run = 0; run < runs; run++) {
+    const start = performance.now()
+    work()
+    best = Math.min(best, performance.now() - start)
+  }
+  return best
+}
+
+describe('pathological inputs', () => {
+  test('runs of underscores and dashes scale linearly', () => {
+    const measure = (length: number) => {
+      const text = '_'.repeat(length)
+      return fastestRun(() => getCitations(text))
+    }
+
+    const small = measure(4000)
+    const large = measure(32000)
+
+    // The placeholder-citation pattern used to retry its leading character run
+    // at every position inside the run, making this quadratic: an 8x longer
+    // input would take ~64x as long.
+    expect(large).toBeLessThan(small * 16)
+  })
+
+  test('still tokenizes placeholder citations', () => {
+    const [, tokens] = defaultTokenizer.tokenize('See ___ U.S. ___ (1982).')
+    const placeholders = tokens.filter(
+      ([, token]) => token.constructor.name === 'PlaceholderCitationToken',
+    )
+    expect(placeholders).toHaveLength(1)
+    expect(String(placeholders[0][1])).toBe('___ U.S. ___')
   })
 })

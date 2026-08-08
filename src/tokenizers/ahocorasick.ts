@@ -2,6 +2,38 @@ import { AhoCorasick } from './aho-corasick'
 import type { TokenExtractor } from './base'
 import { Tokenizer } from './base'
 
+const REGEX_METACHARACTERS = /[.*+?^${}()|[\]\\]/g
+
+/**
+ * Whether an extractor can be skipped when its declared strings are absent.
+ *
+ * Skipping is only sound if the regex genuinely cannot match without every
+ * declared string, which holds when each one appears in the pattern as an
+ * escaped literal. Most extractors are built that way — the reporter or journal
+ * abbreviation is spliced into the pattern escaped — but not all: a handful of
+ * law patterns interpolate a subject between the two halves of the name
+ * (`Cal. <Subject> Code` declared as `Cal. Code`), and the stop-word pattern
+ * embeds `e.g.` with unescaped dots that match any character.
+ *
+ * Rather than trusting the datasets to keep satisfying the invariant, extractors
+ * that fail this check are always run. There are only a few of them, so the cost
+ * is negligible next to being silently wrong when the data changes.
+ */
+function requiresAllStrings(extractor: TokenExtractor): boolean {
+  const { strings } = extractor
+  if (!strings || strings.length === 0) return false
+
+  const caseInsensitive = !!(extractor.flags && extractor.flags & 2)
+  const pattern = caseInsensitive ? extractor.regex.toLowerCase() : extractor.regex
+
+  for (const str of strings) {
+    if (!str) continue
+    const source = caseInsensitive ? str.toLowerCase() : str
+    if (!pattern.includes(source.replace(REGEX_METACHARACTERS, '\\$&'))) return false
+  }
+  return true
+}
+
 /**
  * Tokenizer that only runs the extractors whose literal strings actually occur
  * in the text.
@@ -54,8 +86,8 @@ export class AhocorasickTokenizer extends Tokenizer {
       const extractor = this.extractors[index]
       let indexed = false
 
-      if (extractor.strings) {
-        for (const str of extractor.strings) {
+      if (requiresAllStrings(extractor)) {
+        for (const str of extractor.strings as string[]) {
           if (!str) continue
           // Lower-casing both patterns and text keeps the filter a superset for
           // case-sensitive extractors too, at the cost of a few extra regex runs.

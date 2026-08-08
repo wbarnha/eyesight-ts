@@ -129,7 +129,16 @@ const COMMON_PLACEHOLDER_REPORTERS = [
   'Wis\\.\\s?2d',
 ]
 
-export const PLACEHOLDER_CITATIONS = `([_—–-]+\\s(${COMMON_PLACEHOLDER_REPORTERS.join(
+// The leading run is anchored to its own start with a lookbehind. Without it,
+// the regex engine retries the greedy `[_—–-]+` at every position inside a run
+// of those characters, which is quadratic — and legal documents are full of long
+// runs (signature lines, rules, redaction bars). 16K underscores took 700 ms
+// before this and a 64 KB run took roughly 20 s.
+//
+// This cannot change what matches: starting mid-run is only reachable when
+// starting at the run's start also matched, since the greedy run consumes to the
+// same place either way.
+export const PLACEHOLDER_CITATIONS = `((?<![_—–-])[_—–-]+\\s(${COMMON_PLACEHOLDER_REPORTERS.join(
   '|',
 )})\\s[_—–-]+)`
 

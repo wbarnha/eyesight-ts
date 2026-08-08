@@ -3943,15 +3943,19 @@ describe('Find Citations', () => {
 
     test('scales linearly with document length', () => {
       const unit = 'Claims arise under 42 U.S.C. § 1983 (2018). '
+      // Best-of-N: a single wall-clock sample is too noisy to assert on.
       const measure = (reps: number) => {
         const doc = unit.repeat(reps)
         getCitations(doc)
-        const start = performance.now()
-        getCitations(doc)
-        return performance.now() - start
+        let best = Number.POSITIVE_INFINITY
+        for (let run = 0; run < 5; run++) {
+          const start = performance.now()
+          getCitations(doc)
+          best = Math.min(best, performance.now() - start)
+        }
+        return best
       }
 
-      measure(50) // warm up
       const small = measure(200)
       const large = measure(800)
 
