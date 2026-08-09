@@ -17,7 +17,7 @@ A TypeScript library for extracting legal citations from text strings. This is a
 - **HTML annotation**: Built-in system for marking up citations in HTML documents
 - **High performance**: Literal pre-filtering means only the handful of relevant reporter patterns run against a document
 - **TypeScript-first**: Full type definitions and excellent IDE support
-- **Well-tested**: Comprehensive test suite with 302 passing tests
+- **Well-tested**: Comprehensive test suite with 392 passing tests
 
 ## Installation
 
@@ -237,7 +237,7 @@ bun run bench:golden check /tmp/golden.json
 
 ## Testing
 
-The library includes a comprehensive test suite with 302 tests covering all citation types and edge cases:
+The library includes a comprehensive test suite with 392 tests covering all citation types and edge cases:
 
 ```bash
 # Using Bun (recommended)
@@ -252,6 +252,29 @@ bun test tests/find.test.ts
 # Run tests in watch mode
 bun test --watch
 ```
+
+### The Indigo Book corpus
+
+`tests/bluebook-corpus.test.ts` is an outside check on coverage. Its 82
+citations come from [*The Indigo Book: A Manual of Legal Citation*][indigo] —
+a CC0 public-domain reimplementation of the Bluebook's system — and were
+chosen by that manual's authors as examples of the rules they were teaching,
+not by us as examples of what the tokenizer already handles. The Bluebook
+itself is copyrighted and is not used; Cornell's *Introduction to Basic Legal
+Citation*, the other obvious candidate, is All Rights Reserved and contributed
+nothing.
+
+Every fixture asserts the whole extraction — class, matched text and groups, in
+order. Seven of them assert an extraction that is **wrong**, and say so in a
+`defect` field: section numbers truncated at their first letter
+(`42 U.S.C. § 2000ff-5(a)` yields section `2000`, and so do two other
+subsections of the same Act), a span losing its trailing letter (`301-399i`
+yields `301-399`), a state code defeated by `tit. 8,`, and C.F.R. parts and
+rules of procedure yielding nothing at all. Asserting a known defect keeps it
+from drifting, and makes fixing one a visible edit to the fixture rather than a
+silent change in behaviour.
+
+[indigo]: https://law.resource.org/pub/us/code/blue/indigobook-2.1.html
 
 ## Development
 
