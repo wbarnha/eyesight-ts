@@ -24,10 +24,10 @@ A daily job copies that subtree over this repository. Local changes to any file
 that also exists upstream are therefore repeat business: every one has to be
 re-merged forever until it lands upstream. That is the reason for this document.
 
-### Establish where the port is actually maintained — do this first
+### Where the port is actually maintained — answered
 
-**The configured upstream is already wrong.** The sync workflow's first and only
-scheduled run,
+**The configured upstream is the wrong repository, and always was.** The sync
+workflow's first and only scheduled run,
 [31250648855](https://github.com/wbarnha/eyesight-ts/actions/runs/31250648855)
 on 2026-08-08, failed with:
 
@@ -36,48 +36,57 @@ Upstream subtree not found at eyecite-ts
 ```
 
 That is the `existsSync` guard at `scripts/sync-upstream.mjs:274-276`. The
-tarball of `freelawproject/eyecite@main` downloaded and extracted successfully —
-it simply contains no `eyecite-ts/` directory. `.upstream-sync.json` pins sha
-`bb8d1e5b`, which presumably did have one, so the subtree was removed, renamed,
-or moved after that commit.
+tarball of `freelawproject/eyecite@main` downloads and extracts fine — it
+simply contains no `eyecite-ts/` directory, and **it never did**.
 
-Consequences:
+The pinned sha `bb8d1e5b2edc0edd4aa1982b5901933feabe29aa` resolves under the
+`freelawproject/eyecite` URL, which is the trap: GitHub serves any commit in a
+fork network under the parent's address. That commit is the single commit of
+[freelawproject/eyecite#287](https://github.com/freelawproject/eyecite/pull/287),
+"feat: Add TypeScript port of eyecite library", from head branch
+`beshkenadze:feat/typescript-port` — **closed without merging** on 15 July 2025.
+The author's own closing comment is:
 
-- **No sync has ever succeeded, and none can until the pointer is fixed.** The
-  daily cron fails identically every morning.
-- Any claim that "the next sync will overwrite local work" is, for now,
-  theoretical. The overwrite behaviour is real and worth fixing
-  (`docs/UPSTREAM_SYNC.md`), but nothing is arriving to overwrite anything.
+> Oops, wrong repo :)
 
-**Do not assume `freelawproject/eyecite` is the right place to send PRs.**
-`scripts/sync-upstream.mjs:126-142` rewrites `@beshkenadze/eyecite` package
-references and `github.com/beshkenadze/eyecite` URLs out of the README on every
-sync. Combined with the missing subtree, the likeliest story is that the port
-originated at `beshkenadze/eyecite`, was vendored into `freelawproject/eyecite`
-for a while, and has since moved or been dropped there.
+Free Law Project has never maintained a TypeScript port. `CHANGES.md` in both
+`freelawproject/eyecite` and `freelawproject/reporters-db` contains zero
+mentions of TypeScript, JavaScript, npm or `eyecite-ts`, and the organisation's
+only TS/JS repositories are the RECAP browser extensions, `florida-scrapers`
+and `citation-regexes`.
 
-Resolve this before writing any patch:
+**What this repository actually mirrors** is `beshkenadze/eyecite`, subdir
+`eyecite-ts/`. Its `package.json` is `@beshkenadze/eyecite`, the pinned
+`2.7.6-alpha.2` is from that package's npm release series, and the
+`managedFiles` list in `.upstream-sync.json` matches that tree file for file.
+**It is abandoned**: three commits, the last on 18 July 2025 at
+`2.7.6-alpha.3`.
 
-```bash
-gh repo view freelawproject/eyecite
-gh api repos/freelawproject/eyecite/contents/eyecite-ts --jq '.[].name'   # does the subtree still exist?
-gh repo view beshkenadze/eyecite
-gh api repos/beshkenadze/eyecite/contents/src --jq '.[].name'
-```
+**The npm name `eyecite-ts` belongs to somebody else.**
+[medelman17/eyecite-ts](https://github.com/medelman17/eyecite-ts) (v0.34.2,
+MIT, actively developed) is an independent reimplementation — its own
+hand-written statute patterns, its own architecture, "inspired by and ported
+from eyecite" rather than forked from it. It is a rewrite target, not a
+re-point target, and it does **not** share this codebase's bugs: checked
+against the A4 defect below, it returns `2000e-2`, `240.10b-5`, `13A-12-5` and
+`301-399i` correctly.
 
-Compare a file that this repository did **not** modify — say `src/clean.ts` or
-`src/annotate.ts` — against both candidates. Whichever matches is the upstream.
-Then read that repo's `CONTRIBUTING.md`, issue templates, and CI config, and
-follow its conventions rather than this repository's.
+So there are three real options, and they are the repository owner's to choose:
 
-Whatever you find, **fix `UPSTREAM_OWNER` / `UPSTREAM_REPO` / `UPSTREAM_SUBDIR`
-in `scripts/sync-upstream.mjs:17-19` to match**, or the workflow keeps failing
-daily regardless of anything else in this document.
+1. **Re-point** `UPSTREAM_OWNER`/`UPSTREAM_REPO`/`UPSTREAM_SUBDIR` in
+   `scripts/sync-upstream.mjs:17-19` at `beshkenadze/eyecite` + `eyecite-ts`.
+   The sync starts working and tracks a tree that has not moved in a year.
+2. **Stop syncing** — drop the workflow, delete `.upstream-sync.json`, own the
+   code. Given (1) tracks a dead tree, this is the honest default, and it makes
+   most of this document moot.
+3. **Migrate** to `medelman17/eyecite-ts`. Not a sync; a different library with
+   a different API.
 
-If the port turns out to be unmaintained in both places, the fallback is to stop
-syncing (drop the workflow, delete `.upstream-sync.json`) and own the code
-outright — at which point this document is moot and the local changes are simply
-the code. That is a decision for the repository owner, not something to assume.
+Either way, the daily cron keeps failing until `scripts/sync-upstream.mjs` is
+changed, and **patches still have somewhere to go**: the defects below live in
+`freelawproject/reporters-db` and `freelawproject/eyecite` as much as here.
+Drafted patches for all three trees, with verification, are in
+[`docs/patches/`](patches/README.md).
 
 ---
 
@@ -99,7 +108,7 @@ so they still need writing:
 | A1 | `SpanUpdater` returns one global shift for every offset | `src/span-updater.ts` | **Fixed** — port the fix |
 | A2 | Python `{,4}` quantifier is a literal in JavaScript, so three law patterns never match | `src/utils/regex-templates.ts` | **Not fixed** — report/fix upstream |
 | A3 | `createCitationExtractor` drops a 6th argument, so `caseSensitive: false` silently produces a case-sensitive extractor | `src/tokenizers/custom.ts:78-85` vs `src/tokenizers/extractors.ts:79-97` | **Not fixed** — report/fix upstream |
-| A4 | A section number is truncated at its first letter, so `§ 2000ff-5(a)` extracts as section `2000` and `§ 240.10b-5` as `240.10` | `src/utils/regex-templates.ts` (`law_section`) | **Fixed** — port the fix |
+| A4 | A section number is truncated at its first letter, so `§ 2000ff-5(a)` extracts as section `2000` and `§ 240.10b-5` as `240.10` | `src/utils/regex-templates.ts` (`law_section`) | **Fixed**, and [patches drafted](patches/README.md) for all three affected trees |
 
 **A1 — `SpanUpdater`.** Every updater was an arrow function capturing the same
 two `let` bindings declared outside the loop, so all of them read back the
@@ -161,7 +170,17 @@ pressed:
 
 Trailing `(a)`-style subsections are deliberately still excluded, because this
 port puts them in the pincite. The whole upstream suite passes unchanged;
-expectations are in `tests/bluebook-corpus.test.ts` (`what the corpus shows`).
+expectations are in `tests/bluebook-corpus.test.ts` (`what the corpus shows`)
+and `tests/find.test.ts` (`Law Citations`).
+
+**The same defect is upstream of the port, and worse there.** The port
+overrides `law.section` rather than consuming it, but reporters-db's own copy
+of that regex has the identical hole, and Python eyecite fails harder for it:
+`42 U.S.C. § 2000e-2(a)(1)` — the core prohibition of Title VII — yields no law
+citation at all, and `17 C.F.R. § 240.10b-5` yields section `240`. Patches for
+`freelawproject/reporters-db` and `freelawproject/eyecite`, verified against
+their own suites, are in [`docs/patches/`](patches/README.md) alongside the one
+for this tree.
 
 **A3 — dropped `flags` argument.** `CustomTokenizer.addSimpleCitationPattern`
 passes six arguments to a five-parameter function; the sixth is discarded and

@@ -1,0 +1,120 @@
+From ab82248fcc85e7f1c5f3226d8796de299a3c823a Mon Sep 17 00:00:00 2001
+From: ReCite maintainers <noreply@anthropic.com>
+Date: Sun, 9 Aug 2026 22:06:18 +0000
+Subject: [PATCH] Read a statute section number past its first letter
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+`getLawRegexVariables()` overrides reporters-db's `law.section` with
+`\d+(?:[\-.:]\d+)*` — digits, then groups of a joiner and more digits.
+Congress numbers a section inserted between two existing ones by appending a
+letter, and that pattern stops dead at the first one.
+
+    42 U.S.C. § 2000ff-5(a)        -> section '2000'
+    42 U.S.C. § 2000ff-1(b)(2)(A)  -> section '2000'
+    42 U.S.C. § 2000ff(2)          -> section '2000'
+    21 U.S.C. §§ 301-399i          -> section '301-399'
+    17 C.F.R. § 240.10b-5          -> section '240.10'
+
+The first three are distinct provisions of the Genetic Information
+Nondiscrimination Act and all three came back identical, so a consumer
+resolving them could not tell them apart. The last is worse than truncated:
+240.10 is a real but different regulation, and Rule 10b-5 is not a rule
+anyone wants misidentified.
+
+Each component may now carry up to three trailing letters. The joiner also
+accepts every dash rather than only the ASCII hyphen — the Indigo Book prints
+`42 U.S.C. § 2000ff–5(a)` with an en dash, and a reader that takes one dash
+and not another reports a different section depending on which key the author
+pressed.
+
+Trailing `(a)`-style subsections are still deliberately excluded: this port
+puts them in the pin cite, and that split is not what was broken.
+
+Note for whoever applies this: the same defect exists in the Python original,
+where it is worse — `42 U.S.C. § 2000e-2(a)(1)` yields no law citation at all.
+The root cause there is `law.section` in reporters-db's `regexes.json`, and a
+patch for it is proposed separately. This port overrides that variable rather
+than consuming it, so it needs its own fix either way.
+---
+ eyecite-ts/src/utils/regex-templates.ts | 18 +++++++++++++-
+ eyecite-ts/tests/find.test.ts           | 33 +++++++++++++++++++++++++
+ 2 files changed, 50 insertions(+), 1 deletion(-)
+
+diff --git a/eyecite-ts/src/utils/regex-templates.ts b/eyecite-ts/src/utils/regex-templates.ts
+index 1a7d76e..de17715 100644
+--- a/eyecite-ts/src/utils/regex-templates.ts
++++ b/eyecite-ts/src/utils/regex-templates.ts
+@@ -61,7 +61,23 @@ export function getLawRegexVariables(): Record<string, string> {
+     // Fix the section regex to handle simple numbers like "2"
+     // The original regex requires complex patterns, but we need to match simple sections too
+     // This regex captures the base section number but not subsections (which go in pinCite)
+-    variables.law_section = pythonToJavaScriptRegex('(?P<section>\\d+(?:[\\-.:]\\d+)*)')
++    //
++    // Each component may carry a letter suffix, because Congress numbers a
++    // section inserted between two existing ones by appending one. Without
++    // that, `42 U.S.C. § 2000ff-5(a)` came back as section `2000` — losing
++    // everything after the first letter, so three distinct sections of the
++    // Genetic Information Nondiscrimination Act extracted identically — and
++    // `17 C.F.R. § 240.10b-5` came back as `240.10`, which is a different
++    // rule. The suffix is bounded and cannot cross whitespace, so a section
++    // number still stops where the citation does.
++    // The joiner accepts every dash a document may contain, not only the
++    // ASCII hyphen. The Indigo Book prints `42 U.S.C. § 2000ff–5(a)` with an
++    // en dash, and R5.2.2 asks that the source's own punctuation be
++    // preserved — so a reader that accepts one dash and not another reports a
++    // different section depending on which key the author pressed.
++    variables.law_section = pythonToJavaScriptRegex(
++      '(?P<section>\\d+[a-zA-Z]{0,3}(?:[\\-\\u2010-\\u2015\\u2212.:]\\d+[a-zA-Z]{0,3})*)',
++    )
+     
+     // Other law variables
+     variables.law_subject = pythonToJavaScriptRegex(REGEXES.law.subject || '(?P<subject>[A-Z][.\\-\'A-Za-z]*(?: [A-Z][.\\-\'A-Za-z]*| &){,4})')
+diff --git a/eyecite-ts/tests/find.test.ts b/eyecite-ts/tests/find.test.ts
+index c17b761..7ac91d1 100644
+--- a/eyecite-ts/tests/find.test.ts
++++ b/eyecite-ts/tests/find.test.ts
+@@ -954,6 +954,39 @@ describe('Find Citations', () => {
+       ])
+     })
+ 
++    // Section numbers containing a letter. Congress numbers a section
++    // inserted between two existing ones by appending a letter, so these are
++    // ordinary citations rather than edge cases: 2000e-2 is the core
++    // prohibition of Title VII, and 240.10b-5 is Rule 10b-5.
++    test('should keep a letter inside a section number', () => {
++      const section = (text: string) => {
++        const [citation] = getCitations(text)
++        return (citation as unknown as { groups: Record<string, string> })?.groups?.section
++      }
++
++      expect(section('42 U.S.C. \u00a7 2000e-2(a)(1)')).toBe('2000e-2')
++      expect(section('42 U.S.C. \u00a7 2000ff-1(b)')).toBe('2000ff-1')
++      expect(section('17 C.F.R. \u00a7 240.10b-5')).toBe('240.10b-5')
++      // A span whose end carries a letter: 399 is not 399i.
++      expect(section('21 U.S.C. \u00a7\u00a7 301-399i')).toBe('301-399i')
++      // Bare-digit sections and spans are unchanged.
++      expect(section('42 U.S.C. \u00a7 1983')).toBe('1983')
++      expect(section('17 U.S.C. \u00a7\u00a7 103-107')).toBe('103-107')
++    })
++
++    // The same section number written with an en dash rather than a hyphen.
++    // Word processors substitute one for the other without being asked, and
++    // both name the same provision.
++    test('should read a section number joined by any dash', () => {
++      const section = (text: string) => {
++        const [citation] = getCitations(text)
++        return (citation as unknown as { groups: Record<string, string> })?.groups?.section
++      }
++
++      expect(section('42 U.S.C. \u00a7 2000ff\u20135(a)')).toBe('2000ff\u20135')
++      expect(section('42 U.S.C. \u00a7 2000ff-5(a)')).toBe('2000ff-5')
++    })
++
+     // Statutes at Large citation
+     test('should find Statutes at Large citation', () => {
+       assertCitations('1 Stat. 2', [
+-- 
+2.43.0
+

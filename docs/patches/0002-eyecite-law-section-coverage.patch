@@ -1,0 +1,106 @@
+From a73ade718f125e49ae8b52dae471955a7c98d2f2 Mon Sep 17 00:00:00 2001
+From: ReCite maintainers <noreply@anthropic.com>
+Date: Sun, 9 Aug 2026 22:05:07 +0000
+Subject: [PATCH] Cover statute sections that contain a letter
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+`law.section` in reporters-db is `\d+(?:[\-.:]\d+){,3}`, which stops at the
+first letter in a section number. Congress numbers a section inserted between
+two existing ones by appending a letter, so this is not an edge case:
+
+    42 U.S.C. § 2000e-2(a)(1)  -> UnknownCitation   (Title VII, core prohibition)
+    42 U.S.C. § 2000ff-1(b)    -> UnknownCitation   (GINA)
+    Ala. Code § 13A-12-5       -> UnknownCitation
+    17 C.F.R. § 240.10b-5      -> section '240'     (Rule 10b-5)
+    21 U.S.C. §§ 301-399i      -> section '301'
+
+The fix belongs in reporters-db and is proposed there; this adds the coverage
+that keeps it from regressing, and raises the dependency floor to the release
+that carries it. The four cases fail on reporters-db 3.2.66 and pass on a
+tree with the corrected regex.
+
+They also pin the division of labour that makes the fix safe: the section
+number keeps its letters, and the parenthesised subsection still goes to
+LAW_PIN_CITE_REGEX, so `42 U.S.C. § 2000e-2(a)(1)` is section `2000e-2` with
+pin cite `(a)(1)` rather than one long section.
+
+`python -m pytest tests`: 55 passed, 428 subtests passed, unchanged. The
+202 failures on this machine are all `HyperscanTokenizer` and are present at
+baseline — `hyperscan` is not installed here.
+---
+ CHANGES.md             |  5 +++++
+ pyproject.toml         |  2 +-
+ tests/test_FindTest.py | 26 ++++++++++++++++++++++++++
+ 3 files changed, 32 insertions(+), 1 deletion(-)
+
+diff --git a/CHANGES.md b/CHANGES.md
+index 0762904..19cbd1d 100644
+--- a/CHANGES.md
++++ b/CHANGES.md
+@@ -15,6 +15,11 @@ Fixes:
+ - Fix 2 `TypeError`s raised in `get_citations(markup_text=...)` when
+   `clean_steps` was omitted or lacked `"html"`. The documented fallback that
+   prepends the `html` step was both unreachable and broken.
++- Statute sections containing a letter are no longer truncated or missed.
++  `42 U.S.C. § 2000e-2(a)(1)` and `Ala. Code § 13A-12-5` produced no
++  `FullLawCitation` at all, and `17 C.F.R. § 240.10b-5` produced one for
++  section `240`. Requires reporters-db with the corrected `law.section`
++  regex; the dependency floor is raised accordingly.
+ 
+ ## Current
+ 
+diff --git a/pyproject.toml b/pyproject.toml
+index 8a1b1e3..e1ef182 100644
+--- a/pyproject.toml
++++ b/pyproject.toml
+@@ -40,7 +40,7 @@ dependencies = [
+   "lxml>=4.6.3",
+   "pyahocorasick>=1.2",
+   "regex>=2020.1.8",
+-  "reporters-db>=3.2.53",
++  "reporters-db>=3.2.67",
+ ]
+ 
+ [dependency-groups]
+diff --git a/tests/test_FindTest.py b/tests/test_FindTest.py
+index 9d03d35..832da35 100644
+--- a/tests/test_FindTest.py
++++ b/tests/test_FindTest.py
+@@ -1015,6 +1015,32 @@ class FindTest(TestCase):
+              [law_citation('Mass. Gen. Laws ch. 1, §§ 2-3',
+                            reporter='Mass. Gen. Laws',
+                            groups={'chapter': '1', 'section': '2-3'})]),
++            # Section number containing a letter. Congress numbers a section
++            # inserted between two existing ones by appending a letter, so
++            # these are ordinary citations, not edge cases -- 2000e-2 is the
++            # core prohibition of Title VII.
++            ('42 U.S.C. § 2000e-2(a)(1)',
++             [law_citation('42 U.S.C. § 2000e-2(a)(1)',
++                           reporter='U.S.C.',
++                           metadata={'pin_cite': '(a)(1)'},
++                           groups={'title': '42', 'section': '2000e-2'})]),
++            # A letter after a period, and none after the final number.
++            # Dropping the letter here names a different regulation: 240.10
++            # is not Rule 10b-5.
++            ('17 C.F.R. § 240.10b-5',
++             [law_citation('17 C.F.R. § 240.10b-5',
++                           reporter='C.F.R.',
++                           groups={'chapter': '17', 'section': '240.10b-5'})]),
++            # A letter on the first component rather than a later one.
++            ('Ala. Code § 13A-12-5',
++             [law_citation('Ala. Code § 13A-12-5',
++                           reporter='Ala. Code',
++                           groups={'section': '13A-12-5'})]),
++            # A span whose end carries a letter.
++            ('21 U.S.C. §§ 301-399i',
++             [law_citation('21 U.S.C. §§ 301-399i',
++                           reporter='U.S.C.',
++                           groups={'title': '21', 'section': '301-399i'})]),
+         )
+         # fmt: on
+         self.run_test_pairs(test_pairs, "Law citation extraction")
+-- 
+2.43.0
+

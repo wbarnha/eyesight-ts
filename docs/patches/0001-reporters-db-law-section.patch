@@ -1,0 +1,96 @@
+From bb79329fd334a580a1601e82e589330aecf8d0be Mon Sep 17 00:00:00 2001
+From: ReCite maintainers <noreply@anthropic.com>
+Date: Sun, 9 Aug 2026 22:04:53 +0000
+Subject: [PATCH] Read a statute section number past its first letter
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+`law.section` is `\d+(?:[\-.:]\d+){,3}` — digits, then groups of a joiner and
+more digits. Congress numbers a section inserted between two existing ones by
+appending a letter, and that pattern stops dead at the first one. Every
+citation to such a section is either truncated or missed entirely.
+
+Measured with eyecite 2.7.8 against reporters-db 3.2.66:
+
+    42 U.S.C. § 2000e-2(a)(1)  -> UnknownCitation   (Title VII, core prohibition)
+    42 U.S.C. § 2000e-5(f)(3)  -> UnknownCitation   (Title VII, enforcement)
+    42 U.S.C. § 2000ff-1(b)    -> UnknownCitation   (GINA)
+    Ala. Code § 13A-12-5       -> UnknownCitation
+    17 C.F.R. § 240.10b-5      -> section '240'     (Rule 10b-5)
+    17 C.F.R. § 240.14a-9      -> section '240'     (Rule 14a-9)
+    21 U.S.C. §§ 301-399i      -> section '301'
+
+The regulation cases are worse than truncation: 240 is a real but different
+part, so the citation resolves to something the document did not cite.
+
+Each component may now carry up to three trailing letters. The alternative
+that captures parenthesised subsections is untouched, and so is the ordering
+between the two, so consumers that rely on `81(a)(2)(F)` matching by
+backtracking are unaffected — eyecite, which puts subsections in its own
+pin cite group, still gets section `1132` and pin cite `(a)(1)(B)` from
+`29 U.S.C. § 1132(a)(1)(B)`.
+
+Four examples are added to laws.json rather than a new test, because
+`check_regexes` already requires every example to match: they fail before this
+change and pass after it.
+
+`python tests.py`: 23 passed, 1553 subtests passed, unchanged.
+---
+ reporters_db/data/laws.json    | 10 +++++++---
+ reporters_db/data/regexes.json |  4 ++--
+ 2 files changed, 9 insertions(+), 5 deletions(-)
+
+diff --git a/reporters_db/data/laws.json b/reporters_db/data/laws.json
+index a96e620..dcbda1a 100644
+--- a/reporters_db/data/laws.json
++++ b/reporters_db/data/laws.json
+@@ -72,7 +72,8 @@
+             "cite_type": "leg_statute",
+             "end": null,
+             "examples": [
+-                "Ala. Code § 92.979"
++                "Ala. Code § 92.979",
++                "Ala. Code § 13A-12-5"
+             ],
+             "jurisdiction": "Alabama",
+             "name": "Code of Alabama, 1975 (West); Michie's Alabama Code, 1975 (LexisNexis)",
+@@ -480,7 +481,8 @@
+             "cite_type": "admin_compilation",
+             "end": null,
+             "examples": [
+-                "48 C.F.R. § 38.48"
++                "48 C.F.R. § 38.48",
++                "17 C.F.R. § 240.10b-5"
+             ],
+             "href": "https://law.resource.org/pub/us/code/blue/IndigoBook.html#T2",
+             "jurisdiction": "United States",
+@@ -5537,7 +5539,9 @@
+                 "1 U.S. Code §1",
+                 "21, United States Code, Section 853",
+                 "18, United States Code, Section 3500",
+-                "18, United States Code, Section 981(a)(l)(C)"
++                "18, United States Code, Section 981(a)(l)(C)",
++                "42 U.S.C. § 2000e-2",
++                "21 U.S.C. §§ 301-399i"
+             ],
+             "jurisdiction": "United States",
+             "name": "United States Code; United States Code Annotated; United States Code Service; Gould’s United States Code Unannotated",
+diff --git a/reporters_db/data/regexes.json b/reporters_db/data/regexes.json
+index 021b734..cad9e6f 100644
+--- a/reporters_db/data/regexes.json
++++ b/reporters_db/data/regexes.json
+@@ -35,8 +35,8 @@
+         "#": "Regexes used in laws.json",
+         "day": "(?P<day>\\d{1,2}),?",
+         "month": "(?P<month>[A-Z][a-z]+\\.?)",
+-        "section": "(?P<section>(?:\\d+(?:[\\-.:]\\d+){,3})|(?:\\d+(?:\\((?:[a-zA-Z]{1}|\\d{1,2})\\))+))",
+-        "section#": "Section like 1-2-3, 1.2.3, or 1:2-3.4 or 81(a)(2)(F) or 81(a)",
++        "section": "(?P<section>(?:\\d+[a-zA-Z]{0,3}(?:[\\-.:]\\d+[a-zA-Z]{0,3}){,3})|(?:\\d+(?:\\((?:[a-zA-Z]{1}|\\d{1,2})\\))+))",
++        "section#": "Section like 1-2-3, 1.2.3, 1:2-3.4, 81(a)(2)(F), 81(a), or a lettered section like 2000e-2, 240.10b-5, 13A-12-5 or 399i",
+         "subject": "(?P<subject>$law_subject_word(?: $law_subject_word| &){,4})",
+         "subject#": "One to five word statute subject like 'Parks Rec. & Hist. Preserv.', 'Not-for-Profit Corp.', 'Alt. County Gov’t', 'R.R.'",
+         "subject_word": "[A-Z][.\\-'A-Za-z]*",
+-- 
+2.43.0
+
