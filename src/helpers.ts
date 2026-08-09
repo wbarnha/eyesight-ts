@@ -33,6 +33,16 @@ import {
 } from './regexes'
 
 const BACKWARD_SEEK = 28 // Median case name length in the CL db is 28 (2016-02-26)
+
+// Compiled once from module-level patterns; rebuilding these per call showed up
+// as a measurable share of extraction time. `String.replace` resets `lastIndex`
+// on a global regex, so sharing these instances is safe.
+const STOP_WORD_RE_GLOBAL = new RegExp(STOP_WORD_REGEX, 'g')
+const STOP_WORD_RE_GLOBAL_INSENSITIVE = new RegExp(STOP_WORD_REGEX, 'gi')
+const YEAR_ONLY_RE = new RegExp(YEAR_REGEX)
+const COURT_DATE_RE = new RegExp(
+  `^(.+?)\\s+(${MONTH_REGEX_INNER.trim()})\\s+(\\d{1,2}),?\\s+(\\d{4})$`,
+)
 const MAX_MATCH_CHARS = 300
 
 // Highest valid year is this year + 1 because courts in December sometimes
@@ -79,6 +89,36 @@ export function extractPinCite(
 }
 
 /**
+ * Compiled cache for the anchored regexes used by `matchOnTokens`.
+ *
+ * All call sites pass one of a handful of module-level pattern constants, so
+ * this stays tiny while removing a regex compile from every token scan. A
+ * pattern that fails to compile is cached as `null` so it is only attempted
+ * once. Keying on the pattern string itself (rather than a composed
+ * direction+pattern key) means a lookup never has to rehash a long pattern.
+ */
+const forwardRegexCache = new Map<string, RegExp | null>()
+const backwardRegexCache = new Map<string, RegExp | null>()
+
+function getAnchoredRegex(regex: string, forward: boolean): RegExp | null {
+  const cache = forward ? forwardRegexCache : backwardRegexCache
+  const cached = cache.get(regex)
+  if (cached !== undefined) return cached
+
+  // Scanning forward the regex must match at the start of the text, scanning
+  // backward it must match at the end.
+  const anchored = forward ? `^(?:${regex})` : `(?:${regex})$`
+  let compiled: RegExp | null
+  try {
+    compiled = new RegExp(anchored.replace(/\s+/g, ' ').trim())
+  } catch {
+    compiled = null
+  }
+  cache.set(regex, compiled)
+  return compiled
+}
+
+/**
  * Match regex against tokens starting from an index
  */
 export function matchOnTokens(
@@ -92,23 +132,20 @@ export function matchOnTokens(
   } = {},
 ): RegExpMatchArray | null {
   const { prefix = '', stringsOnly = false, forward = true } = options
-  
-  // Build text to match against, starting from prefix
-  let text = prefix
 
-  // Get range of token indexes to append to text
-  const indexes = forward
-    ? Array.from({ length: words.length - Math.min(startIndex, words.length) }, 
-        (_, i) => Math.min(startIndex, words.length) + i)
-    : Array.from({ length: Math.max(startIndex, -1) + 1 }, 
-        (_, i) => Math.max(startIndex, -1) - i)
+  // Walk outwards from startIndex, collecting token text until we hit
+  // MAX_MATCH_CHARS or a stop token. Only a few hundred characters are ever
+  // used, so the loop is driven by an index counter rather than by
+  // materializing the (potentially document-sized) range of indexes.
+  const parts: string[] = []
+  let length = prefix.length
+  let truncated = false
 
-  // If scanning forward, regex must match at start
-  // If scanning backward, regex must match at end
-  const modifiedRegex = forward ? `^(?:${regex})` : `(?:${regex})$`
+  const first = forward ? Math.min(startIndex, words.length) : Math.max(startIndex, -1)
+  const last = forward ? words.length - 1 : 0
+  const step = forward ? 1 : -1
 
-  // Append text of each token until we reach max_chars or a stop token
-  for (const index of indexes) {
+  for (let index = first; forward ? index <= last : index >= last; index += step) {
     const token = words[index]
 
     // Check for stop token
@@ -119,36 +156,38 @@ export function matchOnTokens(
       break
     }
 
-    // Append or prepend text
-    if (forward) {
-      text += String(token)
-    } else {
-      text = String(token) + text
-    }
+    const part = String(token)
+    parts.push(part)
+    length += part.length
 
     // Check for max length
-    if (text.length >= MAX_MATCH_CHARS) {
-      if (forward) {
-        text = text.slice(0, MAX_MATCH_CHARS)
-      } else {
-        text = text.slice(-MAX_MATCH_CHARS)
-      }
+    if (length >= MAX_MATCH_CHARS) {
+      truncated = true
       break
     }
   }
 
-  // Use regex with verbose flag equivalent (remove whitespace and comments)
-  // For now, just clean up the basic whitespace
-  const cleanedRegex = modifiedRegex.replace(/\s+/g, ' ').trim()
-  let match: RegExpMatchArray | null = null
-  
-  try {
-    match = text.match(new RegExp(cleanedRegex))
-  } catch (e) {
+  // Build text to match against. Scanning backwards visits tokens right to
+  // left, so the collected parts are reversed before joining.
+  let text: string
+  if (forward) {
+    text = prefix + parts.join('')
+    if (truncated) text = text.slice(0, MAX_MATCH_CHARS)
+  } else {
+    parts.reverse()
+    text = parts.join('') + prefix
+    if (truncated) text = text.slice(-MAX_MATCH_CHARS)
+  }
+
+  // If scanning forward, regex must match at start
+  // If scanning backward, regex must match at end
+  const compiled = getAnchoredRegex(regex, forward)
+  if (!compiled) {
     // If the regex is invalid, skip it
     return null
   }
-  
+  const match: RegExpMatchArray | null = text.match(compiled)
+
   // Convert to RegExpMatchArray format with groups
   if (match) {
     const result = match as RegExpMatchArray
@@ -1363,7 +1402,7 @@ function extractDefendantAfterStopword(
  * Strip stop words from text
  */
 export function stripStopWords(text: string): string {
-  let cleaned = text.replace(new RegExp(STOP_WORD_REGEX, 'g'), ' ')
+  let cleaned = text.replace(STOP_WORD_RE_GLOBAL, ' ')
   cleaned = cleaned.replace(/^In\s+/i, '').trim()
   cleaned = cleaned.replace(/^\(/, '').replace(/\)$/, '')
   
@@ -1372,7 +1411,7 @@ export function stripStopWords(text: string): string {
   }
   
   cleaned = cleaned
-    .replace(new RegExp(STOP_WORD_REGEX, 'gi'), '')
+    .replace(STOP_WORD_RE_GLOBAL_INSENSITIVE, '')
     .trim()
   
   // Replace multiple commas/spaces with single space, but preserve comma before Inc., Corp., etc.
@@ -1424,7 +1463,7 @@ function processParenthetical(matchedParenthetical: string | null): string | nul
   }
   
   // Check if it's just a year
-  if (new RegExp(YEAR_REGEX).test(matchedParenthetical)) {
+  if (YEAR_ONLY_RE.test(matchedParenthetical)) {
     return null
   }
   
@@ -1495,8 +1534,7 @@ export function addPostCitation(citation: CaseCitation, words: Tokens): void {
         let hasYearOrCourt = false
         
         // Try to extract date pattern first (month day, year)
-        const dateRegex = new RegExp(`^(.+?)\\s+(${MONTH_REGEX_INNER.trim()})\\s+(\\d{1,2}),?\\s+(\\d{4})$`)
-        const dateMatch = parenContent.match(dateRegex)
+        const dateMatch = parenContent.match(COURT_DATE_RE)
         if (dateMatch) {
           hasYearOrCourt = true
           // Extract court (before month)
@@ -1662,92 +1700,155 @@ export function addPostCitation(citation: CaseCitation, words: Tokens): void {
   }
 }
 
+// District-court state abbreviations recognised by the N./S./E./W.D. pattern.
+const DISTRICT_COURT_STATES: Record<string, string> = {
+  cal: 'ca', calif: 'ca', california: 'ca',
+  ny: 'ny', newyork: 'ny',
+  tex: 'tx', texas: 'tx',
+  fla: 'fl', florida: 'fl',
+  pa: 'pa', penn: 'pa', pennsylvania: 'pa',
+}
+
+// Specific abbreviations are tried before the COURTS database, whose patterns
+// are broad enough to mis-claim them (e.g. "4th Cir." must resolve to ca4, not
+// scotus). Hoisted to module scope so the patterns are compiled once.
+const COURT_ABBREVIATION_PATTERNS: Array<
+  [RegExp, string | ((match: RegExpMatchArray) => string | null)]
+> = [
+  // Federal Circuit Courts - should match before any SCOTUS patterns
+  [/^(\d+)(st|nd|rd|th)\s+cir\.?$/i, (m) => `ca${m[1]}`],
+  [/^(\d+)(st|nd|rd|th)\s+circuit$/i, (m) => `ca${m[1]}`],
+
+  // Federal District Courts
+  [/^([NSEW])\.?\s?D\.?\s+(.+)$/i, (m) => {
+    const direction = m[1].toUpperCase()
+    const state = m[2].replace(/\./g, '').trim()
+    const stateCode = DISTRICT_COURT_STATES[state.toLowerCase()]
+    if (stateCode) {
+      return `${stateCode}d${direction.toLowerCase()}`
+    }
+    return null
+  }],
+
+  // State appellate courts
+  [/^pa\.?\s*super\.?(?:\s*ct\.?)?$/i, 'pasuperct'],
+  [/^pa\.?$/i, 'pa'],
+
+  // Federal appeals courts with more specific patterns
+  [/^d\.?c\.?\s+cir\.?$/i, 'cadc'],
+  [/^fed\.?\s+cir\.?$/i, 'cafc'],
+]
+
+interface CompiledCourt {
+  id: string
+  regexes: RegExp[]
+  normalizedCitationString: string | null
+}
+
+/**
+ * COURTS with their patterns compiled once, in database order. Building this
+ * touches the 1.6MB courts dataset, so it is deferred until the first lookup —
+ * callers that never resolve a court parenthetical never pay for it.
+ */
+let compiledCourts: CompiledCourt[] | null = null
+
+function getCompiledCourts(): CompiledCourt[] {
+  if (compiledCourts) return compiledCourts
+
+  const compiled: CompiledCourt[] = []
+  for (const court of COURTS) {
+    const regexes: RegExp[] = []
+    if (Array.isArray(court.regex)) {
+      for (const regexPattern of court.regex) {
+        try {
+          // Replace ${coa} placeholder with actual pattern
+          regexes.push(
+            new RegExp(
+              regexPattern.replace('${coa}', '(?:Court of Appeals?|Ct\\.? of App\\.?)'),
+              'i',
+            ),
+          )
+        } catch {
+          // Skip invalid regex patterns
+        }
+      }
+    }
+    compiled.push({
+      id: court.id,
+      regexes,
+      // Note: unlike the query string this is deliberately not trimmed, to
+      // match how these were compared before they were precomputed.
+      normalizedCitationString: court.citation_string
+        ? court.citation_string.toLowerCase().replace(/[.,]/g, '').replace(/\s+/g, ' ')
+        : null,
+    })
+  }
+
+  compiledCourts = compiled
+  return compiled
+}
+
+function normalizeCourtString(value: string): string {
+  return value
+    .trim()
+    .toLowerCase()
+    .replace(/[.,]/g, '') // Remove periods and commas
+    .replace(/\s+/g, ' ') // Normalize spaces
+}
+
+/**
+ * Resolved court ids, keyed by the raw parenthetical. Court parentheticals
+ * repeat heavily within a document ("9th Cir.", "D.C. Cir."), and resolving one
+ * scans every court in the database, so repeats are worth remembering.
+ */
+const courtByParenCache = new Map<string, string | null>()
+const COURT_CACHE_LIMIT = 4096
+
 /**
  * Get court by parenthetical string
  */
 export function getCourtByParen(parenString: string): string | null {
   if (!parenString) return null
-  
-  // No debug logging needed in production
-  
+
+  const cached = courtByParenCache.get(parenString)
+  if (cached !== undefined) return cached
+
+  const result = resolveCourtByParen(parenString)
+
+  // Bounded so a document full of distinct parentheticals cannot grow it without
+  // limit; court names are drawn from a small vocabulary in practice.
+  if (courtByParenCache.size >= COURT_CACHE_LIMIT) courtByParenCache.clear()
+  courtByParenCache.set(parenString, result)
+
+  return result
+}
+
+function resolveCourtByParen(parenString: string): string | null {
   // Normalize the input string
-  const normalized = parenString.trim().toLowerCase()
-    .replace(/[.,]/g, '')  // Remove periods and commas
-    .replace(/\s+/g, ' ')  // Normalize spaces
-  
-  // Try specific abbreviation patterns FIRST to avoid conflicts with overly broad COURTS patterns
-  // This ensures "4th Cir." matches to "ca4" instead of "scotus"
-  const abbreviationPatterns: Array<[RegExp, string | ((match: RegExpMatchArray) => string | null)]> = [
-    // Federal Circuit Courts - should match before any SCOTUS patterns
-    [/^(\d+)(st|nd|rd|th)\s+cir\.?$/i, (m) => `ca${m[1]}`],
-    [/^(\d+)(st|nd|rd|th)\s+circuit$/i, (m) => `ca${m[1]}`],
-    
-    // Federal District Courts  
-    [/^([NSEW])\.?\s?D\.?\s+(.+)$/i, (m) => {
-      const direction = m[1].toUpperCase()
-      const state = m[2].replace(/\./g, '').trim()
-      // Common district court patterns
-      const stateMap: Record<string, string> = {
-        'cal': 'ca', 'calif': 'ca', 'california': 'ca',
-        'ny': 'ny', 'newyork': 'ny',
-        'tex': 'tx', 'texas': 'tx',
-        'fla': 'fl', 'florida': 'fl',
-        'pa': 'pa', 'penn': 'pa', 'pennsylvania': 'pa'
-      }
-      const stateCode = stateMap[state.toLowerCase()]
-      if (stateCode) {
-        return `${stateCode}d${direction.toLowerCase()}`
-      }
-      return null
-    }],
-    
-    // State appellate courts
-    [/^pa\.?\s*super\.?(?:\s*ct\.?)?$/i, 'pasuperct'],
-    [/^pa\.?$/i, 'pa'],
-    
-    // Federal appeals courts with more specific patterns
-    [/^d\.?c\.?\s+cir\.?$/i, 'cadc'],
-    [/^fed\.?\s+cir\.?$/i, 'cafc'],
-  ]
-  
-  for (const [pattern, handler] of abbreviationPatterns) {
+  const normalized = normalizeCourtString(parenString)
+
+  for (const [pattern, handler] of COURT_ABBREVIATION_PATTERNS) {
     const match = parenString.match(pattern)
     if (match) {
       const result = typeof handler === 'string' ? handler : handler(match)
       if (result) return result
     }
   }
-  
+
   // Then try exact match from COURTS database
-  for (const court of COURTS) {
-    if (court.regex && Array.isArray(court.regex)) {
-      // Try each regex pattern in the array
-      for (const regexPattern of court.regex) {
-        try {
-          // Replace ${coa} placeholder with actual pattern
-          const processedPattern = regexPattern.replace('${coa}', '(?:Court of Appeals?|Ct\\.? of App\\.?)')
-          const regex = new RegExp(processedPattern, 'i')
-          if (regex.test(parenString)) {
-            return court.id
-          }
-        } catch (e) {
-          // Skip invalid regex patterns
-          continue
-        }
-      }
-    }
-    
-    // Try matching citation string
-    if (court.citation_string) {
-      const courtNorm = court.citation_string.toLowerCase()
-        .replace(/[.,]/g, '')
-        .replace(/\s+/g, ' ')
-      if (normalized === courtNorm) {
+  for (const court of getCompiledCourts()) {
+    for (const regex of court.regexes) {
+      if (regex.test(parenString)) {
         return court.id
       }
     }
+
+    // Try matching citation string
+    if (court.normalizedCitationString !== null && normalized === court.normalizedCitationString) {
+      return court.id
+    }
   }
-  
+
   return null
 }
 

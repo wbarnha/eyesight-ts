@@ -2,16 +2,18 @@
   "name": "eyesight-ts",
   "version": "2.7.6-alpha.2",
   "description": "TypeScript port of Free Law Project's eyecite library, automatically synced from upstream.",
-  "main": "dist/index.js",
+  "main": "dist/index.cjs",
   "module": "dist/index.js",
   "types": "dist/index.d.ts",
   "type": "module",
   "exports": {
     ".": {
+      "types": "./dist/index.d.ts",
       "import": "./dist/index.js",
       "require": "./dist/index.cjs",
-      "types": "./dist/index.d.ts"
-    }
+      "default": "./dist/index.js"
+    },
+    "./package.json": "./package.json"
   },
   "files": [
     "dist/**/*",
@@ -26,6 +28,8 @@
     "build:types": "tsc -p tsconfig.build.json || true",
     "test": "bun test",
     "test:watch": "bun test --watch",
+    "bench": "bun run bench/bench.ts",
+    "bench:golden": "bun run bench/golden.ts",
     "format": "biome format --write",
     "lint": "biome lint --write",
     "check": "biome check --write",
@@ -65,8 +69,6 @@
     "registry": "https://registry.npmjs.org/"
   },
   "dependencies": {
-    "css-select": "^6.0.0",
-    "diff-match-patch": "^1.0.5",
     "domhandler": "^5.0.3",
     "domutils": "^3.2.2",
     "htmlparser2": "^10.0.0"
@@ -74,7 +76,6 @@
   "devDependencies": {
     "@biomejs/biome": "^2.1.1",
     "@types/bun": "^1.2.18",
-    "@types/diff-match-patch": "^1.0.36",
     "typescript": "^5.8.3"
   },
   "engines": {

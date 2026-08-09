@@ -1,28 +1,37 @@
 /**
  * Helper class to shift offsets from text_before to text_after.
- * 
+ *
  * For example:
  * text_before = "foo bar"
  * text_after = "foo baz bar"
  * updater = new SpanUpdater(text_before, text_after)
- * 
+ *
  * Offset 1 is still at offset 1:
  * updater.update(1) => 1
- * 
+ *
  * Offset 4 has moved to offset 8:
  * updater.update(4) => 8
  */
 export class SpanUpdater {
   private offsets: number[] = []
-  private updaters: Array<(offset: number) => number> = []
+  /**
+   * Shift to apply to an offset that falls in the region starting at the
+   * corresponding entry of `offsets`.
+   *
+   * These are stored as plain numbers rather than as one closure per diff step:
+   * a closure per step both allocates per step and — because the running offsets
+   * are a single mutable binding shared by every closure — would have every step
+   * read back the *final* offsets instead of its own.
+   */
+  private deltas: number[] = []
 
   constructor(textBefore: string, textAfter: string) {
     // Calculate diff steps to transform textBefore into textAfter
     const steps = this.getDiffSteps(textBefore, textAfter)
-    
+
     let offsetBefore = 0
     let offsetAfter = 0
-    
+
     for (const [op, count] of steps) {
       if (op === '=') {
         // Characters are the same
@@ -31,19 +40,19 @@ export class SpanUpdater {
       } else if (op === '+') {
         // Characters added
         this.offsets.push(offsetBefore)
-        this.updaters.push((offset: number) => offset + (offsetAfter - offsetBefore))
+        this.deltas.push(offsetAfter - offsetBefore)
         offsetAfter += count
       } else if (op === '-') {
         // Characters deleted
         offsetBefore += count
         this.offsets.push(offsetBefore)
-        this.updaters.push((offset: number) => offset + (offsetAfter - offsetBefore))
+        this.deltas.push(offsetAfter - offsetBefore)
       }
     }
-    
+
     // Add final offset
     this.offsets.push(offsetBefore)
-    this.updaters.push((offset: number) => offset + (offsetAfter - offsetBefore))
+    this.deltas.push(offsetAfter - offsetBefore)
   }
 
   /**
@@ -54,11 +63,12 @@ export class SpanUpdater {
    */
   update(offset: number, bisectFunc: (arr: number[], val: number) => number = bisectRight): number {
     const index = bisectFunc(this.offsets, offset)
-    
-    // Clamp index to valid range
-    const clampedIndex = Math.max(0, Math.min(index - 1, this.updaters.length - 1))
-    
-    return this.updaters[clampedIndex](offset)
+
+    // Offsets that land before the first recorded change are in the unchanged
+    // leading region and map to themselves.
+    if (index === 0) return offset
+
+    return offset + this.deltas[Math.min(index - 1, this.deltas.length - 1)]
   }
 
   /**
@@ -69,11 +79,11 @@ export class SpanUpdater {
    */
   private getDiffSteps(a: string, b: string): Array<[string, number]> {
     const steps: Array<[string, number]> = []
-    
+
     // Simple diff algorithm - can be improved with a proper diff library
     let i = 0
     let j = 0
-    
+
     while (i < a.length || j < b.length) {
       if (i < a.length && j < b.length && a[i] === b[j]) {
         // Characters match
@@ -96,7 +106,7 @@ export class SpanUpdater {
         // Characters don't match, try to find next match
         const nextMatchA = a.indexOf(b[j], i + 1)
         const nextMatchB = b.indexOf(a[i], j + 1)
-        
+
         if (nextMatchA !== -1 && (nextMatchB === -1 || nextMatchA - i < nextMatchB - j)) {
           // Delete from a
           steps.push(['-', nextMatchA - i])
@@ -118,7 +128,7 @@ export class SpanUpdater {
         }
       }
     }
-    
+
     return steps
   }
 }
@@ -129,7 +139,7 @@ export class SpanUpdater {
 export function bisectRight(arr: number[], val: number): number {
   let left = 0
   let right = arr.length
-  
+
   while (left < right) {
     const mid = Math.floor((left + right) / 2)
     if (arr[mid] <= val) {
@@ -138,7 +148,7 @@ export function bisectRight(arr: number[], val: number): number {
       right = mid
     }
   }
-  
+
   return left
 }
 
@@ -148,7 +158,7 @@ export function bisectRight(arr: number[], val: number): number {
 export function bisectLeft(arr: number[], val: number): number {
   let left = 0
   let right = arr.length
-  
+
   while (left < right) {
     const mid = Math.floor((left + right) / 2)
     if (arr[mid] < val) {
@@ -157,6 +167,6 @@ export function bisectLeft(arr: number[], val: number): number {
       right = mid
     }
   }
-  
+
   return left
 }
