@@ -26,13 +26,35 @@ re-merged forever until it lands upstream. That is the reason for this document.
 
 ### Establish where the port is actually maintained — do this first
 
+**The configured upstream is already wrong.** The sync workflow's first and only
+scheduled run,
+[31250648855](https://github.com/wbarnha/eyesight-ts/actions/runs/31250648855)
+on 2026-08-08, failed with:
+
+```
+Upstream subtree not found at eyecite-ts
+```
+
+That is the `existsSync` guard at `scripts/sync-upstream.mjs:274-276`. The
+tarball of `freelawproject/eyecite@main` downloaded and extracted successfully —
+it simply contains no `eyecite-ts/` directory. `.upstream-sync.json` pins sha
+`bb8d1e5b`, which presumably did have one, so the subtree was removed, renamed,
+or moved after that commit.
+
+Consequences:
+
+- **No sync has ever succeeded, and none can until the pointer is fixed.** The
+  daily cron fails identically every morning.
+- Any claim that "the next sync will overwrite local work" is, for now,
+  theoretical. The overwrite behaviour is real and worth fixing
+  (`docs/UPSTREAM_SYNC.md`), but nothing is arriving to overwrite anything.
+
 **Do not assume `freelawproject/eyecite` is the right place to send PRs.**
 `scripts/sync-upstream.mjs:126-142` rewrites `@beshkenadze/eyecite` package
 references and `github.com/beshkenadze/eyecite` URLs out of the README on every
-sync. That strongly suggests the TypeScript port originated at
-`beshkenadze/eyecite` and was vendored into `freelawproject/eyecite`'s
-`eyecite-ts/` directory — which would make *that* the real upstream for code
-changes.
+sync. Combined with the missing subtree, the likeliest story is that the port
+originated at `beshkenadze/eyecite`, was vendored into `freelawproject/eyecite`
+for a while, and has since moved or been dropped there.
 
 Resolve this before writing any patch:
 
@@ -48,9 +70,14 @@ Compare a file that this repository did **not** modify — say `src/clean.ts` or
 Then read that repo's `CONTRIBUTING.md`, issue templates, and CI config, and
 follow its conventions rather than this repository's.
 
+Whatever you find, **fix `UPSTREAM_OWNER` / `UPSTREAM_REPO` / `UPSTREAM_SUBDIR`
+in `scripts/sync-upstream.mjs:17-19` to match**, or the workflow keeps failing
+daily regardless of anything else in this document.
+
 If the port turns out to be unmaintained in both places, the fallback is to stop
 syncing (drop the workflow, delete `.upstream-sync.json`) and own the code
-outright. That is a decision for the repository owner, not something to assume.
+outright — at which point this document is moot and the local changes are simply
+the code. That is a decision for the repository owner, not something to assume.
 
 ---
 

@@ -66,6 +66,24 @@ path, so directory names in it do not filter files beneath them.
 - **Resolve conflicts on a branch off `main`**, then merge that branch. Do not
   resolve them by editing `upstream`.
 
+## The configured upstream is currently wrong
+
+As of 2026-08-08 the sync cannot run at all. Its only scheduled run,
+[31250648855](https://github.com/wbarnha/eyesight-ts/actions/runs/31250648855),
+failed at the sync step:
+
+```
+Upstream subtree not found at eyecite-ts
+```
+
+The archive of `freelawproject/eyecite@main` downloads and extracts fine but
+contains no `eyecite-ts/` directory, so `syncFromExtractedSource` is never
+reached. Until `UPSTREAM_OWNER` / `UPSTREAM_REPO` / `UPSTREAM_SUBDIR` in
+`scripts/sync-upstream.mjs` point somewhere that exists, no upstream change can
+arrive — the vendor branch below is the right destination for when they can
+again, not a fix for this. See `docs/UPSTREAMING.md` for how to work out where
+the port actually lives.
+
 ## Bootstrapping
 
 The vendor branch has to start at the last commit where this repository and
