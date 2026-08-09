@@ -72,7 +72,23 @@ export function getLawRegexVariables(): Record<string, string> {
     // Fix the section regex to handle simple numbers like "2"
     // The original regex requires complex patterns, but we need to match simple sections too
     // This regex captures the base section number but not subsections (which go in pinCite)
-    variables.law_section = pythonToJavaScriptRegex('(?P<section>\\d+(?:[\\-.:]\\d+)*)')
+    //
+    // Each component may carry a letter suffix, because Congress numbers a
+    // section inserted between two existing ones by appending one. Without
+    // that, `42 U.S.C. § 2000ff-5(a)` came back as section `2000` — losing
+    // everything after the first letter, so three distinct sections of the
+    // Genetic Information Nondiscrimination Act extracted identically — and
+    // `17 C.F.R. § 240.10b-5` came back as `240.10`, which is a different
+    // rule. The suffix is bounded and cannot cross whitespace, so a section
+    // number still stops where the citation does.
+    // The joiner accepts every dash a document may contain, not only the
+    // ASCII hyphen. The Indigo Book prints `42 U.S.C. § 2000ff–5(a)` with an
+    // en dash, and R5.2.2 asks that the source's own punctuation be
+    // preserved — so a reader that accepts one dash and not another reports a
+    // different section depending on which key the author pressed.
+    variables.law_section = pythonToJavaScriptRegex(
+      '(?P<section>\\d+[a-zA-Z]{0,3}(?:[\\-\\u2010-\\u2015\\u2212.:]\\d+[a-zA-Z]{0,3})*)',
+    )
     
     // Other law variables
     variables.law_subject = pythonToJavaScriptRegex(REGEXES.law.subject || '(?P<subject>[A-Z][.\\-\'A-Za-z]*(?: [A-Z][.\\-\'A-Za-z]*| &){,4})')

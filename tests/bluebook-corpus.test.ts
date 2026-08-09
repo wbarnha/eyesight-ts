@@ -27,7 +27,11 @@ function extract(fixture: IndigoFixture) {
   return getCitations(fixture.text).map((citation) => ({
     type: citation.constructor.name,
     matched: citation.matchedText(),
-    groups: { ...((citation as { groups?: Record<string, string> }).groups ?? {}) },
+    groups: Object.fromEntries(
+      Object.entries((citation as { groups?: Record<string, string> }).groups ?? {}).filter(
+        ([, value]) => value !== undefined,
+      ),
+    ),
   }))
 }
 
@@ -49,7 +53,7 @@ describe('Indigo Book corpus', () => {
       // Moving one is fine; moving it silently is not.
       expect(INDIGO_FIXTURES.length).toBe(82)
       expect(INDIGO_FIXTURES.reduce((n, f) => n + f.expect.length, 0)).toBe(101)
-      expect(INDIGO_DEFECTS.length).toBe(7)
+      expect(INDIGO_DEFECTS.length).toBe(4)
       expect(INDIGO_EMPTY.length).toBe(2)
     })
 
@@ -76,10 +80,12 @@ describe('Indigo Book corpus', () => {
   })
 
   describe('what the corpus shows', () => {
-    test('reads a section number only as far as its first letter', () => {
+    test('reads a section number past its first letter', () => {
       // Indigo R5.2.2 is about preserving a subsection exactly as the source
       // writes it. These three sections of the Genetic Information
-      // Nondiscrimination Act are distinct authorities and extract identically.
+      // Nondiscrimination Act are distinct authorities, and all three used to
+      // come back as section `2000`. Note the en dash, which is what the
+      // manual prints and which the joiner now accepts alongside the hyphen.
       const sections = [
         '42 U.S.C. § 2000ff–5(a).',
         '42 U.S.C. § 2000ff–1(b)(2)(A).',
@@ -89,20 +95,24 @@ describe('Indigo Book corpus', () => {
         return (citation as unknown as { groups: Record<string, string> }).groups.section
       })
 
-      expect(sections).toEqual(['2000', '2000', '2000'])
+      expect(sections).toEqual(['2000ff–5', '2000ff–1', '2000ff'])
+      expect(new Set(sections).size).toBe(3)
     })
 
-    test('keeps a span of sections but drops a trailing letter from it', () => {
-      const [plain] = getCitations('18 U.S.C. §§ 3681-82.')
-      const [suffixed] = getCitations('21 U.S.C. §§ 301-399i.')
+    test('keeps the trailing letter on a span of sections', () => {
+      const section = (text: string) => {
+        const [citation] = getCitations(text)
+        return (citation as unknown as { groups: Record<string, string> }).groups.section
+      }
 
-      const section = (c: unknown) => (c as { groups: Record<string, string> }).groups.section
-
-      // A span of bare digits survives intact.
-      expect(section(plain)).toBe('3681-82')
-      // One with a letter on the end does not, and 399 is a different section
-      // from 399i.
-      expect(section(suffixed)).toBe('301-399')
+      // A span of bare digits, unchanged.
+      expect(section('18 U.S.C. §§ 3681-82.')).toBe('3681-82')
+      // One with a letter on the end: 399 is a different section from 399i,
+      // and this used to come back as the former.
+      expect(section('21 U.S.C. §§ 301-399i.')).toBe('301-399i')
+      // And the one that matters most, because dropping the letter here names
+      // a different rule entirely.
+      expect(section('17 C.F.R. § 240.10b-5 (2019).')).toBe('240.10b-5')
     })
 
     test('reads medium-neutral citations as reporter citations', () => {

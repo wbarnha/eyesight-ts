@@ -28,10 +28,18 @@
  * Where the extraction is demonstrably wrong, `defect` says so and the test
  * asserts the wrong answer anyway. That is deliberate: a known defect that is
  * asserted cannot drift, and fixing one is then a visible change to this file
- * rather than a silent change in behaviour. Seven fixtures carry one, and they
- * fall into two groups — section numbers truncated at the first letter
- * (`2000ff-5(a)` becomes `2000`, `301-399i` becomes `301-399`), and forms that
- * yield nothing at all (C.F.R. parts, rules of procedure).
+ * rather than a silent change in behaviour.
+ *
+ * Seven fixtures carried one when this file was written. Three have been
+ * fixed, all of them the same defect: a section number was truncated at its
+ * first letter. `42 U.S.C. § 2000ff-5(a)` came back as section `2000`, so
+ * three distinct subsections of one Act extracted identically;
+ * `21 U.S.C. §§ 301-399i` came back as `301-399`, a different range; and
+ * `17 C.F.R. § 240.10b-5` came back as `240.10`, a different rule.
+ *
+ * Four remain, and they are coverage rather than wrong answers: a span written
+ * with `to`, a state code cited by title, C.F.R. parts, and rules of
+ * procedure.
  */
 
 /** The class name `getCitations` returns for a fixture. */
@@ -951,12 +959,11 @@ export const INDIGO_FIXTURES: readonly IndigoFixture[] = [
     expect: [
       {
         type: 'FullLawCitation',
-        matched: '42 U.S.C. § 2000',
-        groups: { title: '42', reporter: 'U.S.C.', section: '2000' },
+        matched: '42 U.S.C. § 2000ff–5',
+        groups: { title: '42', reporter: 'U.S.C.', section: '2000ff–5' },
       },
     ],
-    defect:
-      'The section number is truncated at the first letter: `2000ff-5(a)` comes back as `2000`. R5.2.2 is specifically about preserving the punctuation and subsection of the original, and everything after `2000` is lost.',
+    note: 'The section number keeps its letter suffix and its en dash. It used to be truncated at the first letter -- `2000ff-5(a)` came back as section `2000` -- so this and the fixture below extracted identically despite being different authorities. The trailing `(a)` is still not part of the section, by design: subsections belong to the pincite.',
   },
   {
     id: 'r5-2-2-nested-subsection',
@@ -966,12 +973,11 @@ export const INDIGO_FIXTURES: readonly IndigoFixture[] = [
     expect: [
       {
         type: 'FullLawCitation',
-        matched: '42 U.S.C. § 2000',
-        groups: { title: '42', reporter: 'U.S.C.', section: '2000' },
+        matched: '42 U.S.C. § 2000ff–1',
+        groups: { title: '42', reporter: 'U.S.C.', section: '2000ff–1' },
       },
     ],
-    defect:
-      'Truncated the same way as `2000ff-5(a)`, so two different subsections of the Genetic Information Nondiscrimination Act extract identically.',
+    note: 'Distinct from `2000ff–5(a)` above, which it was not before: both used to come back as section `2000`.',
   },
   {
     id: 'r5-2-3-span-dropped-digits',
@@ -994,12 +1000,12 @@ export const INDIGO_FIXTURES: readonly IndigoFixture[] = [
     expect: [
       {
         type: 'FullLawCitation',
-        matched: '42 U.S.C. §§ 2000',
-        groups: { title: '42', reporter: 'U.S.C.', section: '2000' },
+        matched: '42 U.S.C. §§ 2000ff',
+        groups: { title: '42', reporter: 'U.S.C.', section: '2000ff' },
       },
     ],
     defect:
-      'Truncated to `2000`, which also loses the span. R5.2.3 permits `to` as a span separator; nothing here reads it.',
+      'R5.2.3 permits `to` as a span separator and nothing here reads it, so the citation stops at the first section and the second half of the span is lost.',
   },
   {
     id: 'r5-2-3-cfr-part',
@@ -1044,12 +1050,11 @@ export const INDIGO_FIXTURES: readonly IndigoFixture[] = [
     expect: [
       {
         type: 'FullLawCitation',
-        matched: '21 U.S.C. §§ 301-399',
-        groups: { title: '21', reporter: 'U.S.C.', section: '301-399' },
+        matched: '21 U.S.C. §§ 301-399i',
+        groups: { title: '21', reporter: 'U.S.C.', section: '301-399i' },
       },
     ],
-    defect:
-      'The trailing letter is dropped: the span `301-399i` comes back as `301-399`, which is a different range of sections.',
+    note: 'The span keeps the trailing letter. It used to come back as `301-399`, which is a different range of sections.',
   },
   {
     id: 'r16-1-3-supplement',
@@ -1140,10 +1145,11 @@ export const INDIGO_FIXTURES: readonly IndigoFixture[] = [
     expect: [
       {
         type: 'FullLawCitation',
-        matched: '15 U.S.C. §§ 1051-1141',
-        groups: { title: '15', reporter: 'U.S.C.', section: '1051-1141' },
+        matched: '15 U.S.C. §§ 1051-1141n (2012)',
+        groups: { title: '15', reporter: 'U.S.C.', section: '1051-1141n', year: '2012' },
       },
     ],
+    note: 'Keeps the trailing `n`, and now reaches the year parenthetical it used to stop short of.',
   },
   {
     id: 'v1-r16-stored-communications-span',

@@ -265,14 +265,20 @@ Citation*, the other obvious candidate, is All Rights Reserved and contributed
 nothing.
 
 Every fixture asserts the whole extraction — class, matched text and groups, in
-order. Seven of them assert an extraction that is **wrong**, and say so in a
-`defect` field: section numbers truncated at their first letter
-(`42 U.S.C. § 2000ff-5(a)` yields section `2000`, and so do two other
-subsections of the same Act), a span losing its trailing letter (`301-399i`
-yields `301-399`), a state code defeated by `tit. 8,`, and C.F.R. parts and
-rules of procedure yielding nothing at all. Asserting a known defect keeps it
-from drifting, and makes fixing one a visible edit to the fixture rather than a
-silent change in behaviour.
+order, including the four that assert an extraction that is **wrong** and say
+so in a `defect` field. Asserting a known defect keeps it from drifting, and
+makes fixing one a visible edit to the fixture rather than a silent change in
+behaviour.
+
+It has already paid for itself once. Seven fixtures opened as defects, and
+three were the same bug: a section number was truncated at its first letter, so
+`42 U.S.C. § 2000ff-5(a)` came back as section `2000` — as did two other
+subsections of the same Act, making three distinct authorities extract
+identically — `21 U.S.C. §§ 301-399i` came back as `301-399`, a different
+range, and `17 C.F.R. § 240.10b-5` came back as `240.10`, a different rule.
+The four still open are coverage rather than wrong answers: a span written with
+`to`, a state code defeated by `tit. 8,`, C.F.R. parts, and rules of
+procedure.
 
 [indigo]: https://law.resource.org/pub/us/code/blue/indigobook-2.1.html
 

@@ -99,6 +99,7 @@ so they still need writing:
 | A1 | `SpanUpdater` returns one global shift for every offset | `src/span-updater.ts` | **Fixed** — port the fix |
 | A2 | Python `{,4}` quantifier is a literal in JavaScript, so three law patterns never match | `src/utils/regex-templates.ts` | **Not fixed** — report/fix upstream |
 | A3 | `createCitationExtractor` drops a 6th argument, so `caseSensitive: false` silently produces a case-sensitive extractor | `src/tokenizers/custom.ts:78-85` vs `src/tokenizers/extractors.ts:79-97` | **Not fixed** — report/fix upstream |
+| A4 | A section number is truncated at its first letter, so `§ 2000ff-5(a)` extracts as section `2000` and `§ 240.10b-5` as `240.10` | `src/utils/regex-templates.ts` (`law_section`) | **Fixed** — port the fix |
 
 **A1 — `SpanUpdater`.** Every updater was an arrow function capturing the same
 two `let` bindings declared outside the loop, so all of them read back the
@@ -128,6 +129,39 @@ getCitations('Tex. Penal Code Ann. § 19.02') // -> ['UnknownCitation']
 Whole families of state statutory citations are silently unextractable. The fix
 is `{0,4}`, plus a test for each affected code. Check the other Python-isms in
 the same file while you are there — this is unlikely to be the only one.
+
+**A4 — truncated section numbers.** `getLawRegexVariables()` builds
+`law_section` as `\d+(?:[\-.:]\d+)*`: digits, then groups of a joiner and more
+digits. Congress numbers a section inserted between two existing ones by
+appending a letter, and that pattern stops dead at the first one.
+
+```js
+// section, as reported by getCitations(...)[0].groups
+'42 U.S.C. § 2000ff-5(a)'      // -> '2000'      (should be '2000ff-5')
+'42 U.S.C. § 2000ff-1(b)(2)(A)'// -> '2000'      (should be '2000ff-1')
+'42 U.S.C. § 2000ff(2)'        // -> '2000'      (should be '2000ff')
+'21 U.S.C. §§ 301-399i'        // -> '301-399'   (a different range)
+'17 C.F.R. § 240.10b-5'        // -> '240.10'    (a different rule)
+```
+
+The first three are distinct provisions of the Genetic Information
+Nondiscrimination Act and all three came back identical, so a consumer
+resolving them could not tell them apart. The Rule 10b-5 case is worse: it
+names a real but different regulation.
+
+The fix lets each component carry a bounded letter suffix, and accepts every
+dash rather than only the ASCII hyphen — the Indigo Book prints
+`42 U.S.C. § 2000ff–5(a)` with an en dash, and a reader that accepts one dash
+and not another reports a different section depending on which key the author
+pressed:
+
+```
+(?P<section>\d+[a-zA-Z]{0,3}(?:[\-\u2010-\u2015\u2212.:]\d+[a-zA-Z]{0,3})*)
+```
+
+Trailing `(a)`-style subsections are deliberately still excluded, because this
+port puts them in the pincite. The whole upstream suite passes unchanged;
+expectations are in `tests/bluebook-corpus.test.ts` (`what the corpus shows`).
 
 **A3 — dropped `flags` argument.** `CustomTokenizer.addSimpleCitationPattern`
 passes six arguments to a five-parameter function; the sixth is discarded and
